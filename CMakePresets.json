@@ -10,7 +10,7 @@
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
         "CMAKE_EXPORT_COMPILE_COMMANDS": "YES",
-        "ONNXRUNTIME_ROOTDIR": "${sourceDir}/../onnxruntime-osx-arm64-1.22.0"
+        "ONNXRUNTIME_ROOTDIR": "${sourceDir}/../onnxruntime-linux-x64-gpu-1.22.0"
       }
     }
   ],

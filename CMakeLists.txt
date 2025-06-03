@@ -9,13 +9,13 @@ find_package(OpenCV REQUIRED)
 include_directories(${OpenCV_INCLUDE_DIRS})
 
 # Set ONNX Runtime paths
-set(ONNXRUNTIME_ROOTDIR ${CMAKE_SOURCE_DIR}/../onnxruntime-osx-arm64-1.22.0)
+option(ONNXRUNTIME_ROOTDIR ${CMAKE_SOURCE_DIR}/../onnxruntime-osx-arm64-1.22.0)
 set(ONNXRUNTIME_INCLUDE_DIR ${ONNXRUNTIME_ROOTDIR}/include)
-set(ONNXRUNTIME_LIBRARY ${ONNXRUNTIME_ROOTDIR}/lib/libonnxruntime.dylib)
+set(ONNXRUNTIME_LIBRARY ${ONNXRUNTIME_ROOTDIR}/lib/libonnxruntime.so)
 
 include_directories(${ONNXRUNTIME_INCLUDE_DIR})
 
-add_executable(XFeatONNXSample main.cpp)
+add_executable(XFeatONNXSample main.cpp xfeat_onnx.cpp)
 
 target_link_libraries(XFeatONNXSample 
     PRIVATE
