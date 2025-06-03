@@ -56,18 +56,39 @@ class XFeatONNX(object):
         image2: np.ndarray,
         top_k: int = 4096,
         min_cossim: float = -1,
-    ) -> Tuple[np.ndarray, np.ndarray]:
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         # 特徴点と記述子を抽出
         result1 = self._detect_and_compute(
             self.xfeat,
             image1,
             top_k=top_k,
         )[0]
+        print("Detected keypoints in image1:", len(result1['keypoints']))
         result2 = self._detect_and_compute(
             self.xfeat,
             image2,
             top_k=top_k,
         )[0]
+        print("Detected keypoints in image2:", len(result2['keypoints']))
+
+        # --- Save first 20 descriptors as images for debugging, resized to 500px wide ---
+        if result1['descriptors'] is not None and result1['descriptors'].size > 0:
+            desc1 = result1['descriptors'][:20]
+            desc1_img = cv2.normalize(desc1, None, 0, 255, cv2.NORM_MINMAX)
+            desc1_img = desc1_img.astype('uint8')
+            new_width = 500
+            new_height = int(desc1_img.shape[0] * (500.0 / desc1_img.shape[1]))
+            desc1_img = cv2.resize(desc1_img, (new_width, new_height), interpolation=cv2.INTER_NEAREST)
+            cv2.imwrite('debug_descriptors1_py.png', desc1_img)
+        if result2['descriptors'] is not None and result2['descriptors'].size > 0:
+            desc2 = result2['descriptors'][:20]
+            desc2_img = cv2.normalize(desc2, None, 0, 255, cv2.NORM_MINMAX)
+            desc2_img = desc2_img.astype('uint8')
+            new_width = 500
+            new_height = int(desc2_img.shape[0] * (500.0 / desc2_img.shape[1]))
+            desc2_img = cv2.resize(desc2_img, (new_width, new_height), interpolation=cv2.INTER_NEAREST)
+            cv2.imwrite('debug_descriptors2_py.png', desc2_img)
+        # --- end descriptors debug image ---
 
         # 特徴点のマッチング
         indexes1, indexes2 = self._match_mkpts(
@@ -80,7 +101,7 @@ class XFeatONNX(object):
         mkpts0 = result1['keypoints'][indexes1]
         mkpts1 = result2['keypoints'][indexes2]
 
-        return mkpts0, mkpts1
+        return mkpts0, mkpts1, result1['keypoints'], result2['keypoints']
 
     def _preprocess_image(self, image: Any) -> Tuple[Any, float, float]:
         image_width: int = image.shape[1]
@@ -103,6 +124,8 @@ class XFeatONNX(object):
         kpts: np.ndarray,
         softmax_temp: float = 1.0,
     ) -> np.ndarray:
+        # print input kpts shape
+        print("Input keypoints shape:", kpts.shape)
         # キーポイントヒートマップの生成
         kpts = np.exp(kpts * softmax_temp)
         scores = kpts / np.sum(kpts, axis=1, keepdims=True)
@@ -111,6 +134,17 @@ class XFeatONNX(object):
         heatmap = np.transpose(scores, (0, 2, 3, 1)).reshape(B, H, W, 8, 8)
         heatmap = np.transpose(heatmap,
                                (0, 1, 3, 2, 4)).reshape(B, 1, H * 8, W * 8)
+        # print heatmap shape
+        print("Keypoints heatmap shape:", heatmap.shape)
+        # Save heatmap for debugging
+        if hasattr(self, '_heatmap_save_counter'):
+            self._heatmap_save_counter += 1
+        else:
+            self._heatmap_save_counter = 1
+        heatmap_to_save = heatmap[0, 0]  # (H*8, W*8)
+        heatmap_norm = cv2.normalize(heatmap_to_save, None, 0, 255, cv2.NORM_MINMAX)
+        heatmap_u8 = heatmap_norm.astype(np.uint8)
+        cv2.imwrite(f"debug_heatmap_py_{self._heatmap_save_counter}.png", heatmap_u8)
         return heatmap
 
     def _nms(
@@ -147,6 +181,9 @@ class XFeatONNX(object):
     ) -> List[Dict[str, Any]]:
         # 画像の前処理
         x, resize_rate_w, resize_rate_h = self._preprocess_image(x)
+        # print x.shape and resize rates
+        print("Input image shape:", x.shape)
+        print("Resize rates (width, height):", resize_rate_w, resize_rate_h)
 
         # バッチサイズと画像の次元を取得
         B, _, _, _ = x.shape
@@ -155,6 +192,9 @@ class XFeatONNX(object):
         input_name = net.get_inputs()[0].name
         # ONNXモデルを実行し、特徴マップとキーポイントのログを取得
         M1, K1, _ = net.run(None, {input_name: x})
+        # print M1 and K1 shapes
+        print("Feature map shape:", M1.shape)
+        print("Keypoints shape:", K1.shape)
 
         # 特徴マップのL2正規化
         norm = np.linalg.norm(M1, axis=1, keepdims=True)
@@ -162,6 +202,7 @@ class XFeatONNX(object):
 
         # キーポイントのヒートマップを取得
         K1h = self._get_kpts_heatmap(K1)
+        print("Keypoints heatmap shape:", K1h.shape)
         # 非最大抑制を適用し、キーポイントを抽出
         mkpts = self._nms(K1h, threshold=0.05, kernel_size=5)
 
@@ -221,6 +262,9 @@ class XFeatONNX(object):
         feats2: np.ndarray,
         min_cossim: float = 0.82,
     ) -> Tuple[np.ndarray, np.ndarray]:
+        print("min cosine similarity:", min_cossim)
+        print("feats1 shape:", feats1.shape)
+        print("feats2 shape:", feats2.shape)
         # 特徴量間のコサイン類似度を計算
         cossim = feats1 @ feats2.T
         cossim_t = feats2 @ feats1.T
@@ -242,6 +286,8 @@ class XFeatONNX(object):
         else:
             idx0 = idx0[mutual]
             idx1 = match12[mutual]
+        
+        print("Matched keypoints count:", len(idx0))
 
         return idx0, idx1
 

@@ -11,9 +11,12 @@ public:
             const std::string &interp_bicubic_path,
             const std::string &interp_nearest_path, bool use_gpu);
 
-  std::tuple<cv::Mat, cv::Mat> match(const cv::Mat &image1,
-                                     const cv::Mat &image2, int top_k = 4096,
-                                     float min_cossim = -1.0f);
+  std::tuple<cv::Mat, cv::Mat, cv::Mat, cv::Mat>
+  match(const cv::Mat &image1, const cv::Mat &image2, int top_k = 4096,
+        float min_cossim = -1.0f);
+
+  std::tuple<cv::Mat, std::vector<cv::KeyPoint>, std::vector<cv::KeyPoint>, std::vector<cv::DMatch>>
+  calc_warp_corners_and_matches(const cv::Mat& ref_points, const cv::Mat& dst_points, const cv::Mat& image1);
 
 private:
   Ort::Env env_;
@@ -37,6 +40,10 @@ private:
                            float softmax_temp = 1.0f);
 
   cv::Mat nms(const Ort::Value &heatmap_tensor, float threshold = 0.05f,
+              int kernel_size = 5);
+
+  // NMS on upsampled heatmap
+  cv::Mat nms(const cv::Mat &heatmap, float threshold = 0.05f,
               int kernel_size = 5);
 
   struct DetectionResult {

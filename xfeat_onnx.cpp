@@ -2,6 +2,8 @@
 
 #include <iostream>
 #include <numeric>
+#include <opencv2/calib3d.hpp>
+#include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
 
 using namespace xfeat;
@@ -66,26 +68,35 @@ XFeatONNX::XFeatONNX(const std::string &xfeat_path,
 std::tuple<cv::Mat, float, float>
 XFeatONNX::preprocess_image(const cv::Mat &image) {
   cv::Mat input_image;
+  std::cout << "Preprocessing image: original size = " << image.size()
+            << std::endl;
+  std::cout << "Resizing to: " << input_width_ << "x" << input_height_
+            << std::endl;
   cv::resize(image, input_image, cv::Size(input_width_, input_height_));
   input_image.convertTo(input_image, CV_32F, 1.0 / 255.0);
 
-  // Transpose HWC to CHW
-  cv::Mat channels[3];
-  cv::split(input_image, channels);
-  cv::Mat input_tensor_chw = cv::Mat(input_width_ * input_height_, 3, CV_32F);
-  for (int i = 0; i < 3; ++i) {
-    channels[i]
-        .reshape(1, input_width_ * input_height_)
-        .copyTo(input_tensor_chw.col(i));
+  // Convert HWC to CHW and batch dimension: (1, 3, H, W)
+  std::vector<cv::Mat> chw;
+  cv::split(input_image, chw); // chw[0]=C0, chw[1]=C1, chw[2]=C2, each HxW
+  cv::Mat input_tensor(1, 3 * input_height_ * input_width_, CV_32F);
+  for (int c = 0; c < 3; ++c) {
+    std::memcpy(input_tensor.ptr<float>(0) + c * input_height_ * input_width_,
+                chw[c].ptr<float>(),
+                input_height_ * input_width_ * sizeof(float));
   }
-  input_tensor_chw =
-      input_tensor_chw.reshape(1, {1, 3, input_height_, input_width_});
+  // Reshape to (1, 3, H, W)
+  input_tensor = input_tensor.reshape(1, {1, 3, input_height_, input_width_});
+
+  std::cout << "input tensor size: ";
+  for (int i = 0; i < input_tensor.size.dims(); ++i) {
+    std::cout << input_tensor.size[i] << " ";
+  }
+  std::cout << std::endl;
 
   float resize_rate_w = static_cast<float>(image.cols) / input_width_;
   float resize_rate_h = static_cast<float>(image.rows) / input_height_;
 
-  return std::make_tuple(input_tensor_chw.clone(), resize_rate_w,
-                         resize_rate_h);
+  return std::make_tuple(input_tensor.clone(), resize_rate_w, resize_rate_h);
 }
 
 // Implemented get_kpts_heatmap
@@ -94,29 +105,79 @@ cv::Mat XFeatONNX::get_kpts_heatmap(
     float softmax_temp) {
   // Extract shape and data
   auto shape = kpts_tensor.GetTensorTypeAndShapeInfo().GetShape();
-  // Expect shape [1, 1, H, W]
-  int H = static_cast<int>(shape[2]);
-  int W = static_cast<int>(shape[3]);
+  // Expect shape [1, 65, 44, 80]
+  if (shape.size() != 4 || shape[1] != 65) {
+    throw std::runtime_error(
+        "get_kpts_heatmap: input tensor must have shape (1, 65, 44, 80)");
+  }
+  int B = static_cast<int>(shape[0]);
+  int C = static_cast<int>(shape[1]); // 65
+  int H = static_cast<int>(shape[2]); // 44
+  int W = static_cast<int>(shape[3]); // 80
   const float *data = kpts_tensor.GetTensorData<float>();
-  int N = H * W;
-  // Copy logits to vector
-  std::vector<float> logits(data, data + N);
-  // Apply softmax with temperature
-  float max_logit = *std::max_element(logits.begin(), logits.end());
-  std::vector<float> exp_logits(N);
-  float sum_exp = 0.0f;
-  for (int i = 0; i < N; ++i) {
-    exp_logits[i] = std::exp((logits[i] - max_logit) / softmax_temp);
-    sum_exp += exp_logits[i];
+  // Copy data to a contiguous array for easier manipulation
+  std::vector<float> kpts(data, data + B * C * H * W);
+  // Apply softmax_temp (multiply, not divide, to match Python)
+  for (size_t i = 0; i < kpts.size(); ++i) {
+    kpts[i] *= softmax_temp;
   }
-  // Normalize
-  for (int i = 0; i < N; ++i) {
-    exp_logits[i] /= sum_exp;
+  // Exponentiate
+  for (size_t i = 0; i < kpts.size(); ++i) {
+    kpts[i] = std::exp(kpts[i]);
   }
-  // Convert to cv::Mat (H, W)
-  cv::Mat heatmap(H, W, CV_32F);
-  std::memcpy(heatmap.data, exp_logits.data(), N * sizeof(float));
-  return heatmap;
+  // Sum over channel axis (axis=1)
+  std::vector<float> sum_exp(B * H * W, 0.0f);
+  for (int b = 0; b < B; ++b) {
+    for (int h = 0; h < H; ++h) {
+      for (int w = 0; w < W; ++w) {
+        float sum = 0.0f;
+        for (int c = 0; c < C; ++c) {
+          sum += kpts[((b * C + c) * H + h) * W + w];
+        }
+        sum_exp[(b * H + h) * W + w] = sum;
+      }
+    }
+  }
+  // Normalize and keep only first 64 channels
+  std::vector<float> scores(B * 64 * H * W, 0.0f);
+  for (int b = 0; b < B; ++b) {
+    for (int c = 0; c < 64; ++c) {
+      for (int h = 0; h < H; ++h) {
+        for (int w = 0; w < W; ++w) {
+          float v = kpts[((b * C + c) * H + h) * W + w];
+          float s = sum_exp[(b * H + h) * W + w];
+          scores[((b * 64 + c) * H + h) * W + w] = v / s;
+        }
+      }
+    }
+  }
+  // Rearrange: (B, 64, H, W) -> (B, H, W, 8, 8)
+  std::vector<float> heatmap(B * H * 8 * W * 8, 0.0f);
+  for (int b = 0; b < B; ++b) {
+    for (int h = 0; h < H; ++h) {
+      for (int w = 0; w < W; ++w) {
+        for (int gh = 0; gh < 8; ++gh) {
+          for (int gw = 0; gw < 8; ++gw) {
+            int c = gh * 8 + gw;
+            float v = scores[((b * 64 + c) * H + h) * W + w];
+            // (B, H, W, 8, 8)
+            heatmap[((((b * H + h) * 8 + gh) * W + w) * 8 + gw)] = v;
+          }
+        }
+      }
+    }
+  }
+  // Reshape to (B, 1, H*8, W*8)
+  int out_H = H * 8;
+  int out_W = W * 8;
+  // Only support B=1 for now
+  cv::Mat out_heatmap(out_H, out_W, CV_32F);
+  for (int oh = 0; oh < out_H; ++oh) {
+    for (int ow = 0; ow < out_W; ++ow) {
+      out_heatmap.at<float>(oh, ow) = heatmap[oh * out_W + ow];
+    }
+  }
+  return out_heatmap;
 }
 
 // Placeholder for nms
@@ -154,12 +215,35 @@ cv::Mat XFeatONNX::nms(const Ort::Value &heatmap_tensor, // Should be Ort::Value
   return kpt_mat;
 }
 
+// Add overload for nms that accepts cv::Mat
+cv::Mat XFeatONNX::nms(const cv::Mat &heatmap, float threshold,
+                       int kernel_size) {
+  // Apply max filter (dilate)
+  cv::Mat max_filt;
+  cv::dilate(heatmap, max_filt,
+             cv::getStructuringElement(cv::MORPH_RECT,
+                                       cv::Size(kernel_size, kernel_size)));
+  // Find local maxima: (heatmap == max_filt) & (heatmap > threshold)
+  cv::Mat mask = (heatmap == max_filt) & (heatmap > threshold);
+  // Get coordinates of keypoints
+  std::vector<cv::Point> keypoints;
+  cv::findNonZero(mask, keypoints);
+  // Convert to Nx2 float matrix
+  cv::Mat kpt_mat(keypoints.size(), 2, CV_32F);
+  for (size_t i = 0; i < keypoints.size(); ++i) {
+    kpt_mat.at<float>(i, 0) = static_cast<float>(keypoints[i].x);
+    kpt_mat.at<float>(i, 1) = static_cast<float>(keypoints[i].y);
+  }
+  return kpt_mat;
+}
+
 // Placeholder for detect_and_compute
 std::vector<XFeatONNX::DetectionResult>
 XFeatONNX::detect_and_compute(Ort::Session &session, const cv::Mat &image,
                               int top_k) {
   std::cout << "detect_and_compute called." << std::endl;
   auto [input_tensor, resize_rate_w, resize_rate_h] = preprocess_image(image);
+
   auto input_node_names = session.GetInputNames();
   auto output_node_names = session.GetOutputNames();
   std::vector<int64_t> input_shape = {1, 3, input_height_, input_width_};
@@ -188,17 +272,28 @@ XFeatONNX::detect_and_compute(Ort::Session &session, const cv::Mat &image,
   // M1: Feature map, K1: Keypoint logits
   const Ort::Value &M1_tensor = output_tensors[0];
   const Ort::Value &K1_tensor = output_tensors[1];
+  // Print output tensor shapes for debugging
+  auto M1_shape = M1_tensor.GetTensorTypeAndShapeInfo().GetShape();
+  std::cout << "M1_tensor shape: ";
+  for (const auto &dim : M1_shape)
+    std::cout << dim << " ";
+  std::cout << std::endl;
+  auto K1_shape = K1_tensor.GetTensorTypeAndShapeInfo().GetShape();
+  std::cout << "K1_tensor shape: ";
+  for (const auto &dim : K1_shape)
+    std::cout << dim << " ";
+  std::cout << std::endl;
   // Use GetTensorData for read-only access
   const float *M1_data = M1_tensor.GetTensorData<float>();
   const float *K1_data = K1_tensor.GetTensorData<float>();
 
   // L2 normalize M1
-  std::vector<int64_t> M1_shape =
+  std::vector<int64_t> M1_shape_vec =
       M1_tensor.GetTensorTypeAndShapeInfo().GetShape();
-  int B = M1_shape[0];
-  int C = M1_shape[1];
-  int H = M1_shape[2];
-  int W = M1_shape[3];
+  int B = M1_shape_vec[0];
+  int C = M1_shape_vec[1];
+  int H = M1_shape_vec[2];
+  int W = M1_shape_vec[3];
   cv::Mat M1(C, H * W, CV_32F, (void *)M1_data); // (C, H*W)
   for (int i = 0; i < H * W; ++i) {
     float norm = 0.0f;
@@ -218,8 +313,20 @@ XFeatONNX::detect_and_compute(Ort::Session &session, const cv::Mat &image,
 
   // Get heatmap K1h
   cv::Mat K1h = get_kpts_heatmap(K1_tensor);
-  // NMS on K1h
-  cv::Mat mkpts_mat = nms(K1_tensor); // Pass K1_tensor, not K1h
+  // print the size of K1h
+  std::cout << "K1h size: " << K1h.size() << std::endl;
+
+  // Save heatmap for debugging
+  static int heatmap_save_counter = 1;
+  cv::Mat K1h_norm, K1h_u8;
+  cv::normalize(K1h, K1h_norm, 0, 255, cv::NORM_MINMAX);
+  K1h_norm.convertTo(K1h_u8, CV_8U);
+  std::string fname =
+      "debug_heatmap_cpp_" + std::to_string(heatmap_save_counter++) + ".png";
+  cv::imwrite(fname, K1h_u8);
+
+  // NMS on K1h (upsampled heatmap)
+  cv::Mat mkpts_mat = nms(K1h, 0.05, 5); // Pass K1h (cv::Mat), not K1_tensor
 
   // Interpolate for scores (nearest and bilinear)
   // Prepare ONNX input for interpolators
@@ -377,16 +484,15 @@ XFeatONNX::detect_and_compute(Ort::Session &session, const cv::Mat &image,
   return results; // Placeholder
 }
 
-// Placeholder for match_mkpts
+// match_mkpts: rewritten to match the logic of the Python version
 std::tuple<std::vector<int>, std::vector<int>>
-XFeatONNX::match_mkpts(const cv::Mat &feats1, const cv::Mat &feats2,
-                       float min_cossim) {
-  // feats1: (N1, D), feats2: (N2, D)
+XFeatONNX::match_mkpts(const cv::Mat &feats1, const cv::Mat &feats2, float min_cossim) {
+  std::cout << "min cosine similarity: " << min_cossim << std::endl;
   int N1 = feats1.rows;
   int N2 = feats2.rows;
-  int D = feats1.cols;
   cv::Mat cossim = feats1 * feats2.t();   // (N1, N2)
   cv::Mat cossim_t = feats2 * feats1.t(); // (N2, N1)
+
   std::vector<int> match12(N1), match21(N2);
   for (int i = 0; i < N1; ++i) {
     double maxVal;
@@ -400,37 +506,78 @@ XFeatONNX::match_mkpts(const cv::Mat &feats1, const cv::Mat &feats2,
     cv::minMaxLoc(cossim_t.row(i), nullptr, &maxVal, nullptr, &maxLoc);
     match21[i] = maxLoc.x;
   }
+
   std::vector<int> idx0, idx1;
   for (int i = 0; i < N1; ++i) {
     int j = match12[i];
-    if (match21[j] == i) {
-      float sim = cossim.at<float>(i, j);
-      if (min_cossim < 0 || sim > min_cossim) {
+    if (j >= 0 && j < N2 && match21[j] == i) {
+      if (min_cossim > 0) {
+        // Find max value in cossim.row(i) manually
+        float max_cossim = cossim.at<float>(i, 0);
+        for (int k = 1; k < cossim.cols; ++k) {
+          if (cossim.at<float>(i, k) > max_cossim) {
+            max_cossim = cossim.at<float>(i, k);
+          }
+        }
+        if (max_cossim > min_cossim) {
+          idx0.push_back(i);
+          idx1.push_back(j);
+        }
+      } else {
         idx0.push_back(i);
         idx1.push_back(j);
       }
     }
   }
+  std::cout<< "Matched keypoints: " << idx0.size() << std::endl;
   return {idx0, idx1};
 }
 
 // Placeholder for XFeatONNX::match
-std::tuple<cv::Mat, cv::Mat> XFeatONNX::match(const cv::Mat &image1,
-                                              const cv::Mat &image2, int top_k,
-                                              float min_cossim) {
+std::tuple<cv::Mat, cv::Mat, cv::Mat, cv::Mat>
+XFeatONNX::match(const cv::Mat &image1, const cv::Mat &image2, int top_k,
+                 float min_cossim) {
   std::cout << "match called." << std::endl;
   std::vector<DetectionResult> result1_vec =
       detect_and_compute(xfeat_session_, image1, top_k);
+  std::cout << "Detected " << result1_vec.front().keypoints.size()
+            << " results in image1." << std::endl;
   std::vector<DetectionResult> result2_vec =
       detect_and_compute(xfeat_session_, image2, top_k);
+  std::cout << "Detected " << result2_vec.front().keypoints.size()
+            << " results in image2." << std::endl;
 
   if (result1_vec.empty() || result2_vec.empty()) {
     std::cerr << "Detection failed for one or both images." << std::endl;
-    return std::make_tuple(cv::Mat(), cv::Mat());
+    return {};
   }
 
   DetectionResult result1 = result1_vec[0];
   DetectionResult result2 = result2_vec[0];
+
+  // Save descriptors as images for debugging
+  // Save only the first 20 descriptors as images for debugging, resized to 500px wide
+  if (!result1.descriptors.empty()) {
+    int nrows = std::min(20, result1.descriptors.rows);
+    cv::Mat desc_img1 = result1.descriptors.rowRange(0, nrows).clone();
+    cv::normalize(desc_img1, desc_img1, 0, 255, cv::NORM_MINMAX);
+    desc_img1.convertTo(desc_img1, CV_8U);
+    // Resize to 500px wide
+    int new_width = 500;
+    int new_height = static_cast<int>(desc_img1.rows * (500.0 / desc_img1.cols));
+    cv::resize(desc_img1, desc_img1, cv::Size(new_width, new_height), 0, 0, cv::INTER_NEAREST);
+    cv::imwrite("debug_descriptors1.png", desc_img1);
+  }
+  if (!result2.descriptors.empty()) {
+    int nrows = std::min(20, result2.descriptors.rows);
+    cv::Mat desc_img2 = result2.descriptors.rowRange(0, nrows).clone();
+    cv::normalize(desc_img2, desc_img2, 0, 255, cv::NORM_MINMAX);
+    desc_img2.convertTo(desc_img2, CV_8U);
+    int new_width = 500;
+    int new_height = static_cast<int>(desc_img2.rows * (500.0 / desc_img2.cols));
+    cv::resize(desc_img2, desc_img2, cv::Size(new_width, new_height), 0, 0, cv::INTER_NEAREST);
+    cv::imwrite("debug_descriptors2.png", desc_img2);
+  }
 
   auto [indexes1, indexes2] =
       match_mkpts(result1.descriptors, result2.descriptors, min_cossim);
@@ -445,5 +592,52 @@ std::tuple<cv::Mat, cv::Mat> XFeatONNX::match(const cv::Mat &image1,
     mkpts1.at<float>(i, 1) = result2.keypoints.at<float>(indexes2[i], 1);
   }
 
-  return std::make_tuple(mkpts0, mkpts1);
+  // Filter matches using homography (RANSAC)
+  auto [warped_corners, keypoints1, keypoints2, matches] =
+      calc_warp_corners_and_matches(mkpts0, mkpts1, image1);
+
+  // Convert filtered keypoints back to cv::Mat for return
+  cv::Mat filtered_mkpts0((int)matches.size(), 2, CV_32F);
+  cv::Mat filtered_mkpts1((int)matches.size(), 2, CV_32F);
+  for (size_t i = 0; i < matches.size(); ++i) {
+    filtered_mkpts0.at<float>(i, 0) = keypoints1[i].pt.x;
+    filtered_mkpts0.at<float>(i, 1) = keypoints1[i].pt.y;
+    filtered_mkpts1.at<float>(i, 0) = keypoints2[i].pt.x;
+    filtered_mkpts1.at<float>(i, 1) = keypoints2[i].pt.y;
+  }
+
+  return std::make_tuple(filtered_mkpts0, filtered_mkpts1, result1.keypoints, result2.keypoints);
+}
+
+// Calculate warped corners and matches using homography (like the Python version)
+std::tuple<cv::Mat, std::vector<cv::KeyPoint>, std::vector<cv::KeyPoint>, std::vector<cv::DMatch>>
+XFeatONNX::calc_warp_corners_and_matches(const cv::Mat& ref_points, const cv::Mat& dst_points, const cv::Mat& image1) {
+    // Compute homography (use cv::RANSAC as int for compatibility)
+    cv::Mat mask;
+    cv::Mat H = cv::findHomography(ref_points, dst_points, cv::RANSAC, 3.5, mask, 2000, 0.999);
+    if (H.empty()) {
+        std::cerr << "Homography estimation failed." << std::endl;
+        return {};
+    }
+    mask = mask.reshape(1, mask.total());
+
+    // Get corners of image1
+    int h = image1.rows;
+    int w = image1.cols;
+    std::vector<cv::Point2f> corners_image1 = { {0,0}, {float(w-1),0}, {float(w-1),float(h-1)}, {0,float(h-1)} };
+    std::vector<cv::Point2f> warped_corners;
+    cv::perspectiveTransform(corners_image1, warped_corners, H);
+    cv::Mat warped_corners_mat(warped_corners);
+
+    // Prepare keypoints and matches
+    std::vector<cv::KeyPoint> keypoints1, keypoints2;
+    std::vector<cv::DMatch> matches;
+    for (int i = 0; i < ref_points.rows; ++i) {
+        if (mask.at<uchar>(i)) {
+            keypoints1.emplace_back(ref_points.at<float>(i,0), ref_points.at<float>(i,1), 5);
+            keypoints2.emplace_back(dst_points.at<float>(i,0), dst_points.at<float>(i,1), 5);
+            matches.emplace_back(i, i, 0);
+        }
+    }
+    return {warped_corners_mat, keypoints1, keypoints2, matches};
 }

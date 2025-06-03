@@ -76,7 +76,7 @@ def main():
     image2 = cv2.imread(image2_path)
 
     # 特徴点抽出
-    mkpts0, mkpts1 = xfeat.match(image1, image2, top_k=4096)
+    mkpts0, mkpts1, kpts0, kpts1 = xfeat.match(image1, image2, top_k=4096)
     result = xfeat.calc_warp_corners_and_matches(
         mkpts0,
         mkpts1,
@@ -107,6 +107,17 @@ def main():
         matchColor=(0, 255, 0),
         flags=2,
     )
+
+    # kpts0, kpts1 を cv2.KeyPoint のリストに変換してから描画・保存
+    def to_cv_keypoints(arr):
+        return [cv2.KeyPoint(float(x[0]), float(x[1]), 1) for x in arr]
+
+    kpts0_cv = to_cv_keypoints(mkpts0)
+    kpts1_cv = to_cv_keypoints(mkpts1)
+    image1_kpts = cv2.drawKeypoints(image1, kpts0_cv, None, (0, 255, 0), cv2.DRAW_MATCHES_FLAGS_DEFAULT)
+    image2_kpts = cv2.drawKeypoints(image2, kpts1_cv, None, (0, 0, 255), cv2.DRAW_MATCHES_FLAGS_DEFAULT)
+    cv2.imwrite("debug_kpts0.png", image1_kpts)
+    cv2.imwrite("debug_kpts1.png", image2_kpts)
 
     cv2.imshow('', debug_image)
     cv2.waitKey(-1)
