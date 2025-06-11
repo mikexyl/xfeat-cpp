@@ -19,28 +19,11 @@ XFeatONNX::XFeatONNX(const std::string &xfeat_path,
   session_options_.SetGraphOptimizationLevel(
       GraphOptimizationLevel::ORT_ENABLE_EXTENDED);
   if (use_gpu) {
-    // Add CUDA provider if available and requested
-    std::cout << "GPU support is requested, but not fully implemented in this "
-                 "snippet."
-              << std::endl;
+    std::cout << "Using GPU for ONNX Runtime." << std::endl;
+    OrtCUDAProviderOptions cuda_options{};
+    session_options_.AppendExecutionProvider_CUDA(cuda_options);
   }
-#ifdef _WIN32
-  const std::wstring widexfeatPath =
-      std::wstring(xfeat_path.begin(), xfeat_path.end());
-  const std::wstring wideinterp_bilinear_path =
-      std::wstring(interp_bilinear_path.begin(), interp_bilinear_path.end());
-  const std::wstring wideinterp_bicubic_path =
-      std::wstring(interp_bicubic_path.begin(), interp_bicubic_path.end());
-  const std::wstring wideinterp_nearest_path =
-      std::wstring(interp_nearest_path.begin(), interp_nearest_path.end());
-  xfeat_session_ = Ort::Session(env_, widexfeatPath.c_str(), session_options_);
-  interp_bilinear_session_ =
-      Ort::Session(env_, wideinterp_bilinear_path.c_str(), session_options_);
-  interp_bicubic_session_ =
-      Ort::Session(env_, wideinterp_bicubic_path.c_str(), session_options_);
-  interp_nearest_session_ =
-      Ort::Session(env_, wideinterp_nearest_path.c_str(), session_options_);
-#else
+
   xfeat_session_ = Ort::Session(env_, xfeat_path.c_str(), session_options_);
   interp_bilinear_session_ =
       Ort::Session(env_, interp_bilinear_path.c_str(), session_options_);
@@ -48,7 +31,7 @@ XFeatONNX::XFeatONNX(const std::string &xfeat_path,
       Ort::Session(env_, interp_bicubic_path.c_str(), session_options_);
   interp_nearest_session_ =
       Ort::Session(env_, interp_nearest_path.c_str(), session_options_);
-#endif
+
   // Get input dimensions from the xfeat model
   auto input_node_names = xfeat_session_.GetInputNames();
   auto input_node_dims =
@@ -68,10 +51,6 @@ XFeatONNX::XFeatONNX(const std::string &xfeat_path,
 std::tuple<cv::Mat, float, float>
 XFeatONNX::preprocess_image(const cv::Mat &image) {
   cv::Mat input_image;
-  std::cout << "Preprocessing image: original size = " << image.size()
-            << std::endl;
-  std::cout << "Resizing to: " << input_width_ << "x" << input_height_
-            << std::endl;
   cv::resize(image, input_image, cv::Size(input_width_, input_height_));
   input_image.convertTo(input_image, CV_32F, 1.0 / 255.0);
 
@@ -86,12 +65,6 @@ XFeatONNX::preprocess_image(const cv::Mat &image) {
   }
   // Reshape to (1, 3, H, W)
   input_tensor = input_tensor.reshape(1, {1, 3, input_height_, input_width_});
-
-  std::cout << "input tensor size: ";
-  for (int i = 0; i < input_tensor.size.dims(); ++i) {
-    std::cout << input_tensor.size[i] << " ";
-  }
-  std::cout << std::endl;
 
   float resize_rate_w = static_cast<float>(image.cols) / input_width_;
   float resize_rate_h = static_cast<float>(image.rows) / input_height_;
@@ -237,11 +210,9 @@ cv::Mat XFeatONNX::nms(const cv::Mat &heatmap, float threshold,
   return kpt_mat;
 }
 
-// Placeholder for detect_and_compute
-std::vector<XFeatONNX::DetectionResult>
-XFeatONNX::detect_and_compute(Ort::Session &session, const cv::Mat &image,
-                              int top_k) {
-  std::cout << "detect_and_compute called." << std::endl;
+XFeatONNX::DetectionResult XFeatONNX::detect_and_compute(Ort::Session &session,
+                                                         const cv::Mat &image,
+                                                         int top_k) {
   auto [input_tensor, resize_rate_w, resize_rate_h] = preprocess_image(image);
 
   auto input_node_names = session.GetInputNames();
@@ -274,15 +245,7 @@ XFeatONNX::detect_and_compute(Ort::Session &session, const cv::Mat &image,
   const Ort::Value &K1_tensor = output_tensors[1];
   // Print output tensor shapes for debugging
   auto M1_shape = M1_tensor.GetTensorTypeAndShapeInfo().GetShape();
-  std::cout << "M1_tensor shape: ";
-  for (const auto &dim : M1_shape)
-    std::cout << dim << " ";
-  std::cout << std::endl;
   auto K1_shape = K1_tensor.GetTensorTypeAndShapeInfo().GetShape();
-  std::cout << "K1_tensor shape: ";
-  for (const auto &dim : K1_shape)
-    std::cout << dim << " ";
-  std::cout << std::endl;
   // Use GetTensorData for read-only access
   const float *M1_data = M1_tensor.GetTensorData<float>();
   const float *K1_data = K1_tensor.GetTensorData<float>();
@@ -313,8 +276,6 @@ XFeatONNX::detect_and_compute(Ort::Session &session, const cv::Mat &image,
 
   // Get heatmap K1h
   cv::Mat K1h = get_kpts_heatmap(K1_tensor);
-  // print the size of K1h
-  std::cout << "K1h size: " << K1h.size() << std::endl;
 
   // Save heatmap for debugging
   static int heatmap_save_counter = 1;
@@ -475,19 +436,17 @@ XFeatONNX::detect_and_compute(Ort::Session &session, const cv::Mat &image,
   for (int i = 0; i < valid_feats.size(); ++i) {
     valid_feats[i].copyTo(valid_feats_mat.row(i));
   }
-  std::vector<DetectionResult> results;
   DetectionResult det;
   det.keypoints = valid_kpts_mat;
   det.scores = valid_scores_mat;
   det.descriptors = valid_feats_mat;
-  results.push_back(det);
-  return results; // Placeholder
+  return det; // Placeholder
 }
 
 // match_mkpts: rewritten to match the logic of the Python version
 std::tuple<std::vector<int>, std::vector<int>>
-XFeatONNX::match_mkpts(const cv::Mat &feats1, const cv::Mat &feats2, float min_cossim) {
-  std::cout << "min cosine similarity: " << min_cossim << std::endl;
+XFeatONNX::match_mkpts(const cv::Mat &feats1, const cv::Mat &feats2,
+                       float min_cossim) {
   int N1 = feats1.rows;
   int N2 = feats2.rows;
   cv::Mat cossim = feats1 * feats2.t();   // (N1, N2)
@@ -529,7 +488,6 @@ XFeatONNX::match_mkpts(const cv::Mat &feats1, const cv::Mat &feats2, float min_c
       }
     }
   }
-  std::cout<< "Matched keypoints: " << idx0.size() << std::endl;
   return {idx0, idx1};
 }
 
@@ -537,23 +495,22 @@ XFeatONNX::match_mkpts(const cv::Mat &feats1, const cv::Mat &feats2, float min_c
 std::tuple<cv::Mat, cv::Mat, cv::Mat, cv::Mat>
 XFeatONNX::match(const cv::Mat &image1, const cv::Mat &image2, int top_k,
                  float min_cossim) {
-  std::cout << "match called." << std::endl;
-  std::vector<DetectionResult> result1_vec =
-      detect_and_compute(xfeat_session_, image1, top_k);
-  std::cout << "Detected " << result1_vec.front().keypoints.size()
-            << " results in image1." << std::endl;
-  std::vector<DetectionResult> result2_vec =
-      detect_and_compute(xfeat_session_, image2, top_k);
-  std::cout << "Detected " << result2_vec.front().keypoints.size()
-            << " results in image2." << std::endl;
+  auto result1 = detect_and_compute(xfeat_session_, image1, top_k);
+  auto result2 = detect_and_compute(xfeat_session_, image2, top_k);
 
-  if (result1_vec.empty() || result2_vec.empty()) {
-    std::cerr << "Detection failed for one or both images." << std::endl;
+  return match(result1, result2, image1, top_k, min_cossim);
+}
+
+// Overload: match using DetectionResult directly
+std::tuple<cv::Mat, cv::Mat, cv::Mat, cv::Mat>
+XFeatONNX::match(const XFeatONNX::DetectionResult &result1,
+                 const XFeatONNX::DetectionResult &result2,
+                 const cv::Mat &image1, int top_k, float min_cossim) {
+  if (result1.keypoints.empty() || result2.keypoints.empty()) {
+    std::cerr << "Detection failed for one or both DetectionResults."
+              << std::endl;
     return {};
   }
-
-  DetectionResult result1 = result1_vec[0];
-  DetectionResult result2 = result2_vec[0];
 
   auto [indexes1, indexes2] =
       match_mkpts(result1.descriptors, result2.descriptors, min_cossim);
@@ -582,38 +539,49 @@ XFeatONNX::match(const cv::Mat &image1, const cv::Mat &image2, int top_k,
     filtered_mkpts1.at<float>(i, 1) = keypoints2[i].pt.y;
   }
 
-  return std::make_tuple(filtered_mkpts0, filtered_mkpts1, result1.keypoints, result2.keypoints);
+  return std::make_tuple(filtered_mkpts0, filtered_mkpts1, result1.keypoints,
+                         result2.keypoints);
 }
 
-// Calculate warped corners and matches using homography (like the Python version)
-std::tuple<cv::Mat, std::vector<cv::KeyPoint>, std::vector<cv::KeyPoint>, std::vector<cv::DMatch>>
-XFeatONNX::calc_warp_corners_and_matches(const cv::Mat& ref_points, const cv::Mat& dst_points, const cv::Mat& image1) {
-    // Compute homography (use cv::RANSAC as int for compatibility)
-    cv::Mat mask;
-    cv::Mat H = cv::findHomography(ref_points, dst_points, cv::RANSAC, 3.5, mask, 2000, 0.999);
-    if (H.empty()) {
-        std::cerr << "Homography estimation failed." << std::endl;
-        return {};
-    }
-    mask = mask.reshape(1, mask.total());
+// Calculate warped corners and matches using homography (like the Python
+// version)
+std::tuple<cv::Mat, std::vector<cv::KeyPoint>, std::vector<cv::KeyPoint>,
+           std::vector<cv::DMatch>>
+XFeatONNX::calc_warp_corners_and_matches(const cv::Mat &ref_points,
+                                         const cv::Mat &dst_points,
+                                         const cv::Mat &image1) {
+  // Compute homography (use cv::RANSAC as int for compatibility)
+  cv::Mat mask;
+  cv::Mat H = cv::findHomography(ref_points, dst_points, cv::RANSAC, 3.5, mask,
+                                 2000, 0.999);
+  if (H.empty()) {
+    std::cerr << "Homography estimation failed." << std::endl;
+    return {};
+  }
+  mask = mask.reshape(1, mask.total());
 
-    // Get corners of image1
-    int h = image1.rows;
-    int w = image1.cols;
-    std::vector<cv::Point2f> corners_image1 = { {0,0}, {float(w-1),0}, {float(w-1),float(h-1)}, {0,float(h-1)} };
-    std::vector<cv::Point2f> warped_corners;
-    cv::perspectiveTransform(corners_image1, warped_corners, H);
-    cv::Mat warped_corners_mat(warped_corners);
+  // Get corners of image1
+  int h = image1.rows;
+  int w = image1.cols;
+  std::vector<cv::Point2f> corners_image1 = {{0, 0},
+                                             {float(w - 1), 0},
+                                             {float(w - 1), float(h - 1)},
+                                             {0, float(h - 1)}};
+  std::vector<cv::Point2f> warped_corners;
+  cv::perspectiveTransform(corners_image1, warped_corners, H);
+  cv::Mat warped_corners_mat(warped_corners);
 
-    // Prepare keypoints and matches
-    std::vector<cv::KeyPoint> keypoints1, keypoints2;
-    std::vector<cv::DMatch> matches;
-    for (int i = 0; i < ref_points.rows; ++i) {
-        if (mask.at<uchar>(i)) {
-            keypoints1.emplace_back(ref_points.at<float>(i,0), ref_points.at<float>(i,1), 5);
-            keypoints2.emplace_back(dst_points.at<float>(i,0), dst_points.at<float>(i,1), 5);
-            matches.emplace_back(i, i, 0);
-        }
+  // Prepare keypoints and matches
+  std::vector<cv::KeyPoint> keypoints1, keypoints2;
+  std::vector<cv::DMatch> matches;
+  for (int i = 0; i < ref_points.rows; ++i) {
+    if (mask.at<uchar>(i)) {
+      keypoints1.emplace_back(ref_points.at<float>(i, 0),
+                              ref_points.at<float>(i, 1), 5);
+      keypoints2.emplace_back(dst_points.at<float>(i, 0),
+                              dst_points.at<float>(i, 1), 5);
+      matches.emplace_back(i, i, 0);
     }
-    return {warped_corners_mat, keypoints1, keypoints2, matches};
+  }
+  return {warped_corners_mat, keypoints1, keypoints2, matches};
 }

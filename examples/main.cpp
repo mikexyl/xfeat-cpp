@@ -1,5 +1,6 @@
 // filepath:
 // /Users/mikexyl/Workspaces/onnx_ws/src/XFeat-Image-Matching-ONNX-Sample/main.cpp
+#include <filesystem>
 #include <iostream>
 #include <onnxruntime/core/session/onnxruntime_cxx_api.h>
 #include <opencv2/opencv.hpp>
@@ -11,36 +12,36 @@
 using namespace xfeat;
 
 int main(int argc, char *argv[]) {
-  std::string image1_path = (argc > 1) ? argv[1] : "image/sample1.jpg";
-  std::string image2_path = (argc > 2) ? argv[2] : "image/sample2.jpg";
+  std::filesystem::path image_folder((argc > 1) ? argv[1] : "image");
+  std::filesystem::path image1_path = image_folder / "sample1.png";
+  std::filesystem::path image2_path = image_folder / "sample2.png";
 
-  std::string xfeat_model_path =
-      (argc > 3) ? argv[3] : "onnx_model/xfeat_640x352.onnx";
-  std::string interp_bilinear_path =
-      (argc > 4) ? argv[4] : "onnx_model/interpolator_bilinear_640x352.onnx";
-  std::string interp_bicubic_path =
-      (argc > 5) ? argv[5] : "onnx_model/interpolator_bicubic_640x352.onnx";
-  std::string interp_nearest_path =
-      (argc > 6) ? argv[6] : "onnx_model/interpolator_nearest_640x352.onnx";
+  std::filesystem::path xfeat_model_folder =
+      (argc > 2) ? argv[2] : "onnx_model";
+  std::filesystem::path xfeat_model_path =
+      xfeat_model_folder / "xfeat_640x352.onnx";
+  std::filesystem::path interp_bilinear_path =
+      xfeat_model_folder / "interpolator_bilinear_640x352.onnx";
+  std::filesystem::path interp_bicubic_path =
+      xfeat_model_folder / "interpolator_bicubic_640x352.onnx";
+  std::filesystem::path interp_nearest_path =
+      xfeat_model_folder / "interpolator_nearest_640x352.onnx";
 
   cv::Mat image1 = cv::imread(image1_path, cv::IMREAD_COLOR);
   cv::Mat image2 = cv::imread(image2_path, cv::IMREAD_COLOR);
 
   if (image1.empty() || image2.empty()) {
-    std::cerr << "Error loading images!" << std::endl;
+    std::cerr << "Error loading images! path: " << image1_path << " or "
+              << image2_path << std::endl;
     return 1;
   }
-  std::cout << "Images loaded successfully." << std::endl;
 
   try {
     XFeatONNX xfeat_onnx(xfeat_model_path, interp_bilinear_path,
-                         interp_bicubic_path, interp_nearest_path,
-                         true // use_gpu
-    );
+                         interp_bicubic_path, interp_nearest_path, true);
 
     auto [mkpts0, mkpts1, kpts1, kpts2] = xfeat_onnx.match(image1, image2);
 
-    std::cout << "Matching complete (partially implemented)." << std::endl;
     // Draw matches using OpenCV's drawMatches
     if (!mkpts0.empty() && !mkpts1.empty()) {
       cv::Mat img1 = cv::imread(image1_path, cv::IMREAD_COLOR);
@@ -55,6 +56,7 @@ int main(int argc, char *argv[]) {
       for (int i = 0; i < mkpts0.rows; ++i) {
         matches.emplace_back(i, i, 0.f);
       }
+      std::cout << "Number of matches: " << matches.size() << std::endl;
       cv::Mat out_img;
       cv::drawMatches(img1, kpts1, img2, kpts2, matches, out_img,
                       cv::Scalar::all(-1), cv::Scalar::all(-1),
