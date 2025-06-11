@@ -7,26 +7,26 @@ set(CMAKE_CXX_STANDARD_REQUIRED True)
 # include the cmake modules
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
 
-# Find OpenCV
 find_package(OpenCV REQUIRED)
-include_directories(${OpenCV_INCLUDE_DIRS})
-
 find_package(onnxruntime REQUIRED)
-
-include_directories(${onnxruntime_INCLUDE_DIR})
+find_package(TBB REQUIRED)
 
 add_library(${PROJECT_NAME} src/xfeat_onnx.cpp)
 
 target_link_libraries(${PROJECT_NAME}
     PRIVATE
-    ${OpenCV_LIBS} 
+    ${OpenCV_LIBS}
     ${onnxruntime_LIBRARY}
+    TBB::tbb
+    TBB::tbbmalloc
 )
 
 target_include_directories(${PROJECT_NAME}
     PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>
+    ${onnxruntime_INCLUDE_DIR}
+    ${OpenCV_INCLUDE_DIRS}
 )
 
 add_subdirectory(examples)

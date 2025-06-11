@@ -1,8 +1,10 @@
 // filepath:
 // /Users/mikexyl/Workspaces/onnx_ws/src/XFeat-Image-Matching-ONNX-Sample/main.cpp
+#include <onnxruntime/core/session/onnxruntime_cxx_api.h>
+
+#include <chrono>
 #include <filesystem>
 #include <iostream>
-#include <onnxruntime/core/session/onnxruntime_cxx_api.h>
 #include <opencv2/opencv.hpp>
 #include <string>
 #include <vector>
@@ -11,36 +13,46 @@
 
 using namespace xfeat;
 
-int main(int argc, char *argv[]) {
+int main(int argc, char* argv[]) {
   std::filesystem::path image_folder((argc > 1) ? argv[1] : "image");
   std::filesystem::path image1_path = image_folder / "sample1.png";
   std::filesystem::path image2_path = image_folder / "sample2.png";
 
-  std::filesystem::path xfeat_model_folder =
-      (argc > 2) ? argv[2] : "onnx_model";
-  std::filesystem::path xfeat_model_path =
-      xfeat_model_folder / "xfeat_640x352.onnx";
-  std::filesystem::path interp_bilinear_path =
-      xfeat_model_folder / "interpolator_bilinear_640x352.onnx";
-  std::filesystem::path interp_bicubic_path =
-      xfeat_model_folder / "interpolator_bicubic_640x352.onnx";
-  std::filesystem::path interp_nearest_path =
-      xfeat_model_folder / "interpolator_nearest_640x352.onnx";
+  std::filesystem::path xfeat_model_folder = (argc > 2) ? argv[2] : "onnx_model";
+  std::filesystem::path xfeat_model_path = xfeat_model_folder / "xfeat_640x352.onnx";
+  std::filesystem::path interp_bilinear_path = xfeat_model_folder / "interpolator_bilinear_640x352.onnx";
+  std::filesystem::path interp_bicubic_path = xfeat_model_folder / "interpolator_bicubic_640x352.onnx";
+  std::filesystem::path interp_nearest_path = xfeat_model_folder / "interpolator_nearest_640x352.onnx";
+
+  const int max_kpts = (argc > 3) ? std::stoi(argv[3]) : 4096;
+  const float min_cos = (argc > 4) ? std::stof(argv[4]) : -1.0f;
 
   cv::Mat image1 = cv::imread(image1_path, cv::IMREAD_COLOR);
   cv::Mat image2 = cv::imread(image2_path, cv::IMREAD_COLOR);
 
   if (image1.empty() || image2.empty()) {
-    std::cerr << "Error loading images! path: " << image1_path << " or "
-              << image2_path << std::endl;
+    std::cerr << "Error loading images! path: " << image1_path << " or " << image2_path << std::endl;
     return 1;
   }
 
   try {
-    XFeatONNX xfeat_onnx(xfeat_model_path, interp_bilinear_path,
-                         interp_bicubic_path, interp_nearest_path, true);
+    XFeatONNX xfeat_onnx(xfeat_model_path, interp_bilinear_path, interp_bicubic_path, interp_nearest_path, true);
 
-    auto [mkpts0, mkpts1, kpts1, kpts2] = xfeat_onnx.match(image1, image2);
+    xfeat_onnx.match(image1, image2, max_kpts);
+
+    auto start = std::chrono::high_resolution_clock::now();
+    TimingStats timing_stats;
+    auto [mkpts0, mkpts1, kpts1, kpts2] = xfeat_onnx.match(image1, image2, max_kpts, min_cos, &timing_stats);
+    auto end = std::chrono::high_resolution_clock::now();
+    std::chrono::duration<double, std::milli> duration = end - start;
+    std::cout << "xfeat_onnx detection+match+RANSAC on 2 images (size: " << image1.cols << "x" << image1.rows
+              << ") took " << duration.count() << "ms." << std::endl;
+
+    // print timing stats
+    std::cout << "Timing Stats:" << std::endl;
+    for (const auto& entry : timing_stats) {
+      std::cout << entry.first << ": " << entry.second << " ms" << std::endl;
+    }
 
     // Draw matches using OpenCV's drawMatches
     if (!mkpts0.empty() && !mkpts1.empty()) {
@@ -58,18 +70,24 @@ int main(int argc, char *argv[]) {
       }
       std::cout << "Number of matches: " << matches.size() << std::endl;
       cv::Mat out_img;
-      cv::drawMatches(img1, kpts1, img2, kpts2, matches, out_img,
-                      cv::Scalar::all(-1), cv::Scalar::all(-1),
+      cv::drawMatches(img1,
+                      kpts1,
+                      img2,
+                      kpts2,
+                      matches,
+                      out_img,
+                      cv::Scalar::all(-1),
+                      cv::Scalar::all(-1),
                       std::vector<char>(),
                       cv::DrawMatchesFlags::NOT_DRAW_SINGLE_POINTS);
       cv::imshow("Matches", out_img);
       cv::waitKey(0);
     }
 
-  } catch (const Ort::Exception &e) {
+  } catch (const Ort::Exception& e) {
     std::cerr << "ONNX Runtime Exception in main: " << e.what() << std::endl;
     return 1;
-  } catch (const std::exception &e) {
+  } catch (const std::exception& e) {
     std::cerr << "Standard Exception in main: " << e.what() << std::endl;
     return 1;
   }

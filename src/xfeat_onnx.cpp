@@ -1,5 +1,9 @@
 #include "xfeat-cpp/xfeat_onnx.h"
 
+#include <tbb/blocked_range.h>
+#include <tbb/mutex.h>
+#include <tbb/parallel_for.h>
+
 #include <iostream>
 #include <numeric>
 #include <opencv2/calib3d.hpp>
@@ -8,34 +12,47 @@
 
 using namespace xfeat;
 
-XFeatONNX::XFeatONNX(const std::string &xfeat_path,
-                     const std::string &interp_bilinear_path,
-                     const std::string &interp_bicubic_path,
-                     const std::string &interp_nearest_path, bool use_gpu)
-    : env_(ORT_LOGGING_LEVEL_WARNING, "XFeatONNX"), xfeat_session_(nullptr),
-      interp_bilinear_session_(nullptr), interp_bicubic_session_(nullptr),
+XFeatONNX::XFeatONNX(const std::string& xfeat_path,
+                     const std::string& interp_bilinear_path,
+                     const std::string& interp_bicubic_path,
+                     const std::string& interp_nearest_path,
+                     bool use_gpu)
+    : env_(ORT_LOGGING_LEVEL_WARNING, "XFeatONNX"),
+      xfeat_session_(nullptr),
+      interp_bilinear_session_(nullptr),
+      interp_bicubic_session_(nullptr),
       interp_nearest_session_(nullptr) {
   session_options_.SetIntraOpNumThreads(1);
-  session_options_.SetGraphOptimizationLevel(
-      GraphOptimizationLevel::ORT_ENABLE_EXTENDED);
+  session_options_.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_EXTENDED);
   if (use_gpu) {
-    std::cout << "Using GPU for ONNX Runtime." << std::endl;
+    std::cout << "Attempting to use GPU for ONNX Runtime." << std::endl;
+
+    auto available_providers = Ort::GetAvailableProviders();
+    bool cuda_available = false;
+    for (const auto& provider : available_providers) {
+      if (provider == "CUDAExecutionProvider") {
+        cuda_available = true;
+        break;
+      }
+    }
+
+    if (!cuda_available) {
+      std::cerr << "Error: CUDAExecutionProvider is not available. Terminating." << std::endl;
+      throw std::runtime_error("CUDAExecutionProvider not found.");
+    }
+
     OrtCUDAProviderOptions cuda_options{};
     session_options_.AppendExecutionProvider_CUDA(cuda_options);
   }
 
   xfeat_session_ = Ort::Session(env_, xfeat_path.c_str(), session_options_);
-  interp_bilinear_session_ =
-      Ort::Session(env_, interp_bilinear_path.c_str(), session_options_);
-  interp_bicubic_session_ =
-      Ort::Session(env_, interp_bicubic_path.c_str(), session_options_);
-  interp_nearest_session_ =
-      Ort::Session(env_, interp_nearest_path.c_str(), session_options_);
+  interp_bilinear_session_ = Ort::Session(env_, interp_bilinear_path.c_str(), session_options_);
+  interp_bicubic_session_ = Ort::Session(env_, interp_bicubic_path.c_str(), session_options_);
+  interp_nearest_session_ = Ort::Session(env_, interp_nearest_path.c_str(), session_options_);
 
   // Get input dimensions from the xfeat model
   auto input_node_names = xfeat_session_.GetInputNames();
-  auto input_node_dims =
-      xfeat_session_.GetInputTypeInfo(0).GetTensorTypeAndShapeInfo().GetShape();
+  auto input_node_dims = xfeat_session_.GetInputTypeInfo(0).GetTensorTypeAndShapeInfo().GetShape();
   input_height_ = static_cast<int>(input_node_dims[2]);
   input_width_ = static_cast<int>(input_node_dims[3]);
   // Get input names for interpolator models (assuming they are consistent)
@@ -43,20 +60,20 @@ XFeatONNX::XFeatONNX(const std::string &xfeat_path,
   interp_input_name1_ = interp_input_node_names[0];
   interp_input_name2_ = interp_input_node_names[1];
   std::cout << "ONNX models loaded." << std::endl;
-  std::cout << "Input Dims: H=" << input_height_ << ", W=" << input_width_
-            << std::endl;
+  std::cout << "Input Dims: H=" << input_height_ << ", W=" << input_width_ << std::endl;
+
+  // TODO(mike): add manully triggered warmup
 }
 
 // Placeholder for preprocess_image
-std::tuple<cv::Mat, float, float>
-XFeatONNX::preprocess_image(const cv::Mat &image) {
+std::tuple<cv::Mat, float, float> XFeatONNX::preprocess_image(const cv::Mat& image) {
   cv::Mat input_image;
   cv::resize(image, input_image, cv::Size(input_width_, input_height_));
   input_image.convertTo(input_image, CV_32F, 1.0 / 255.0);
 
   // Convert HWC to CHW and batch dimension: (1, 3, H, W)
   std::vector<cv::Mat> chw;
-  cv::split(input_image, chw); // chw[0]=C0, chw[1]=C1, chw[2]=C2, each HxW
+  cv::split(input_image, chw);  // chw[0]=C0, chw[1]=C1, chw[2]=C2, each HxW
   cv::Mat input_tensor(1, 3 * input_height_ * input_width_, CV_32F);
   for (int c = 0; c < 3; ++c) {
     std::memcpy(input_tensor.ptr<float>(0) + c * input_height_ * input_width_,
@@ -73,21 +90,19 @@ XFeatONNX::preprocess_image(const cv::Mat &image) {
 }
 
 // Implemented get_kpts_heatmap
-cv::Mat XFeatONNX::get_kpts_heatmap(
-    const Ort::Value &kpts_tensor, // Should be Ort::Value
-    float softmax_temp) {
+cv::Mat XFeatONNX::get_kpts_heatmap(const Ort::Value& kpts_tensor,  // Should be Ort::Value
+                                    float softmax_temp) {
   // Extract shape and data
   auto shape = kpts_tensor.GetTensorTypeAndShapeInfo().GetShape();
   // Expect shape [1, 65, 44, 80]
   if (shape.size() != 4 || shape[1] != 65) {
-    throw std::runtime_error(
-        "get_kpts_heatmap: input tensor must have shape (1, 65, 44, 80)");
+    throw std::runtime_error("get_kpts_heatmap: input tensor must have shape (1, 65, 44, 80)");
   }
   int B = static_cast<int>(shape[0]);
-  int C = static_cast<int>(shape[1]); // 65
-  int H = static_cast<int>(shape[2]); // 44
-  int W = static_cast<int>(shape[3]); // 80
-  const float *data = kpts_tensor.GetTensorData<float>();
+  int C = static_cast<int>(shape[1]);  // 65
+  int H = static_cast<int>(shape[2]);  // 44
+  int W = static_cast<int>(shape[3]);  // 80
+  const float* data = kpts_tensor.GetTensorData<float>();
   // Copy data to a contiguous array for easier manipulation
   std::vector<float> kpts(data, data + B * C * H * W);
   // Apply softmax_temp (multiply, not divide, to match Python)
@@ -154,23 +169,22 @@ cv::Mat XFeatONNX::get_kpts_heatmap(
 }
 
 // Placeholder for nms
-cv::Mat XFeatONNX::nms(const Ort::Value &heatmap_tensor, // Should be Ort::Value
-                       float threshold, int kernel_size) {
+cv::Mat XFeatONNX::nms(const Ort::Value& heatmap_tensor,  // Should be Ort::Value
+                       float threshold,
+                       int kernel_size) {
   // Extract heatmap shape and data
   auto shape = heatmap_tensor.GetTensorTypeAndShapeInfo().GetShape();
   // Assume shape is [1, 1, H, W]
   int H = static_cast<int>(shape[2]);
   int W = static_cast<int>(shape[3]);
-  const float *data = heatmap_tensor.GetTensorData<float>();
+  const float* data = heatmap_tensor.GetTensorData<float>();
   // Convert to cv::Mat
   cv::Mat heatmap(H, W, CV_32F);
   std::memcpy(heatmap.data, data, H * W * sizeof(float));
 
   // Apply max filter (dilate)
   cv::Mat max_filt;
-  cv::dilate(heatmap, max_filt,
-             cv::getStructuringElement(cv::MORPH_RECT,
-                                       cv::Size(kernel_size, kernel_size)));
+  cv::dilate(heatmap, max_filt, cv::getStructuringElement(cv::MORPH_RECT, cv::Size(kernel_size, kernel_size)));
 
   // Find local maxima: (heatmap == max_filt) & (heatmap > threshold)
   cv::Mat mask = (heatmap == max_filt) & (heatmap > threshold);
@@ -189,13 +203,10 @@ cv::Mat XFeatONNX::nms(const Ort::Value &heatmap_tensor, // Should be Ort::Value
 }
 
 // Add overload for nms that accepts cv::Mat
-cv::Mat XFeatONNX::nms(const cv::Mat &heatmap, float threshold,
-                       int kernel_size) {
+cv::Mat XFeatONNX::nms(const cv::Mat& heatmap, float threshold, int kernel_size) {
   // Apply max filter (dilate)
   cv::Mat max_filt;
-  cv::dilate(heatmap, max_filt,
-             cv::getStructuringElement(cv::MORPH_RECT,
-                                       cv::Size(kernel_size, kernel_size)));
+  cv::dilate(heatmap, max_filt, cv::getStructuringElement(cv::MORPH_RECT, cv::Size(kernel_size, kernel_size)));
   // Find local maxima: (heatmap == max_filt) & (heatmap > threshold)
   cv::Mat mask = (heatmap == max_filt) & (heatmap > threshold);
   // Get coordinates of keypoints
@@ -210,61 +221,60 @@ cv::Mat XFeatONNX::nms(const cv::Mat &heatmap, float threshold,
   return kpt_mat;
 }
 
-XFeatONNX::DetectionResult XFeatONNX::detect_and_compute(Ort::Session &session,
-                                                         const cv::Mat &image,
-                                                         int top_k) {
+XFeatONNX::DetectionResult XFeatONNX::detect_and_compute(Ort::Session& session, const cv::Mat& image, int top_k) {
   auto [input_tensor, resize_rate_w, resize_rate_h] = preprocess_image(image);
 
   auto input_node_names = session.GetInputNames();
   auto output_node_names = session.GetOutputNames();
   std::vector<int64_t> input_shape = {1, 3, input_height_, input_width_};
   Ort::AllocatorWithDefaultOptions allocator;
-  Ort::Value input_ort_tensor = Ort::Value::CreateTensor<float>(
-      allocator.GetInfo(), (float *)input_tensor.data,
-      input_tensor.total() * input_tensor.channels(), input_shape.data(),
-      input_shape.size());
-  std::vector<const char *> input_names_char;
-  for (const auto &name : input_node_names) {
+  Ort::Value input_ort_tensor = Ort::Value::CreateTensor<float>(allocator.GetInfo(),
+                                                                (float*)input_tensor.data,
+                                                                input_tensor.total() * input_tensor.channels(),
+                                                                input_shape.data(),
+                                                                input_shape.size());
+  std::vector<const char*> input_names_char;
+  for (const auto& name : input_node_names) {
     input_names_char.push_back(name.c_str());
   }
-  std::vector<const char *> output_names_char;
-  for (const auto &name : output_node_names) {
+  std::vector<const char*> output_names_char;
+  for (const auto& name : output_node_names) {
     output_names_char.push_back(name.c_str());
   }
   std::vector<Ort::Value> output_tensors;
   try {
-    output_tensors = session.Run(
-        Ort::RunOptions{nullptr}, input_names_char.data(), &input_ort_tensor, 1,
-        output_names_char.data(), output_names_char.size());
-  } catch (const Ort::Exception &e) {
+    output_tensors = session.Run(Ort::RunOptions{nullptr},
+                                 input_names_char.data(),
+                                 &input_ort_tensor,
+                                 1,
+                                 output_names_char.data(),
+                                 output_names_char.size());
+  } catch (const Ort::Exception& e) {
     std::cerr << "ONNX Runtime Exception: " << e.what() << std::endl;
     return {};
   }
   // M1: Feature map, K1: Keypoint logits
-  const Ort::Value &M1_tensor = output_tensors[0];
-  const Ort::Value &K1_tensor = output_tensors[1];
+  const Ort::Value& M1_tensor = output_tensors[0];
+  const Ort::Value& K1_tensor = output_tensors[1];
   // Print output tensor shapes for debugging
   auto M1_shape = M1_tensor.GetTensorTypeAndShapeInfo().GetShape();
   auto K1_shape = K1_tensor.GetTensorTypeAndShapeInfo().GetShape();
   // Use GetTensorData for read-only access
-  const float *M1_data = M1_tensor.GetTensorData<float>();
-  const float *K1_data = K1_tensor.GetTensorData<float>();
+  const float* M1_data = M1_tensor.GetTensorData<float>();
+  const float* K1_data = K1_tensor.GetTensorData<float>();
 
   // L2 normalize M1
-  std::vector<int64_t> M1_shape_vec =
-      M1_tensor.GetTensorTypeAndShapeInfo().GetShape();
+  std::vector<int64_t> M1_shape_vec = M1_tensor.GetTensorTypeAndShapeInfo().GetShape();
   int B = M1_shape_vec[0];
   int C = M1_shape_vec[1];
   int H = M1_shape_vec[2];
   int W = M1_shape_vec[3];
-  cv::Mat M1(C, H * W, CV_32F, (void *)M1_data); // (C, H*W)
+  cv::Mat M1(C, H * W, CV_32F, (void*)M1_data);  // (C, H*W)
   for (int i = 0; i < H * W; ++i) {
     float norm = 0.0f;
-    for (int c = 0; c < C; ++c)
-      norm += M1.at<float>(c, i) * M1.at<float>(c, i);
+    for (int c = 0; c < C; ++c) norm += M1.at<float>(c, i) * M1.at<float>(c, i);
     norm = std::sqrt(norm) + 1e-8f;
-    for (int c = 0; c < C; ++c)
-      M1.at<float>(c, i) /= norm;
+    for (int c = 0; c < C; ++c) M1.at<float>(c, i) /= norm;
   }
   // Reshape back to (C, H, W)
   std::vector<cv::Mat> M1_channels;
@@ -272,7 +282,7 @@ XFeatONNX::DetectionResult XFeatONNX::detect_and_compute(Ort::Session &session,
     M1_channels.push_back(cv::Mat(H, W, CV_32F, M1.ptr<float>(c)));
   }
   cv::Mat M1_normed;
-  cv::merge(M1_channels, M1_normed); // (H, W, C)
+  cv::merge(M1_channels, M1_normed);  // (H, W, C)
 
   // Get heatmap K1h
   cv::Mat K1h = get_kpts_heatmap(K1_tensor);
@@ -282,12 +292,11 @@ XFeatONNX::DetectionResult XFeatONNX::detect_and_compute(Ort::Session &session,
   cv::Mat K1h_norm, K1h_u8;
   cv::normalize(K1h, K1h_norm, 0, 255, cv::NORM_MINMAX);
   K1h_norm.convertTo(K1h_u8, CV_8U);
-  std::string fname =
-      "debug_heatmap_cpp_" + std::to_string(heatmap_save_counter++) + ".png";
+  std::string fname = "debug_heatmap_cpp_" + std::to_string(heatmap_save_counter++) + ".png";
   cv::imwrite(fname, K1h_u8);
 
   // NMS on K1h (upsampled heatmap)
-  cv::Mat mkpts_mat = nms(K1h, 0.05, 5); // Pass K1h (cv::Mat), not K1_tensor
+  cv::Mat mkpts_mat = nms(K1h, 0.05, 5);  // Pass K1h (cv::Mat), not K1_tensor
 
   // Interpolate for scores (nearest and bilinear)
   // Prepare ONNX input for interpolators
@@ -297,41 +306,40 @@ XFeatONNX::DetectionResult XFeatONNX::detect_and_compute(Ort::Session &session,
     throw std::runtime_error("mkpts_mat buffer size does not match shape");
   }
   Ort::Value mkpts_tensor = Ort::Value::CreateTensor<float>(
-      allocator.GetInfo(), (float *)mkpts_mat.ptr<float>(), mkpts_numel,
-      kpt_shape.data(), kpt_shape.size());
+      allocator.GetInfo(), (float*)mkpts_mat.ptr<float>(), mkpts_numel, kpt_shape.data(), kpt_shape.size());
   std::vector<int64_t> K1h_shape = {1, 1, K1h.rows, K1h.cols};
   size_t K1h_numel = 1 * 1 * K1h.rows * K1h.cols;
   if (K1h.total() != K1h_numel) {
     throw std::runtime_error("K1h buffer size does not match shape");
   }
   Ort::Value K1h_tensor = Ort::Value::CreateTensor<float>(
-      allocator.GetInfo(), (float *)K1h.ptr<float>(), K1h_numel,
-      K1h_shape.data(), K1h_shape.size());
+      allocator.GetInfo(), (float*)K1h.ptr<float>(), K1h_numel, K1h_shape.data(), K1h_shape.size());
   // Nearest
-  std::vector<const char *> interp_input_names = {interp_input_name1_.c_str(),
-                                                  interp_input_name2_.c_str()};
+  std::vector<const char*> interp_input_names = {interp_input_name1_.c_str(), interp_input_name2_.c_str()};
   std::vector<Ort::Value> interp_inputs;
   interp_inputs.push_back(std::move(K1h_tensor));
   interp_inputs.push_back(std::move(mkpts_tensor));
   // Fetch actual output node names for interpolators
   auto interp_nearest_output_names = interp_nearest_session_.GetOutputNames();
-  std::vector<const char *> interp_nearest_output_names_char;
-  for (const auto &name : interp_nearest_output_names)
-    interp_nearest_output_names_char.push_back(name.c_str());
+  std::vector<const char*> interp_nearest_output_names_char;
+  for (const auto& name : interp_nearest_output_names) interp_nearest_output_names_char.push_back(name.c_str());
   auto interp_bilinear_output_names = interp_bilinear_session_.GetOutputNames();
-  std::vector<const char *> interp_bilinear_output_names_char;
-  for (const auto &name : interp_bilinear_output_names)
-    interp_bilinear_output_names_char.push_back(name.c_str());
-  std::vector<Ort::Value> nearest_out = interp_nearest_session_.Run(
-      Ort::RunOptions{nullptr}, interp_input_names.data(), interp_inputs.data(),
-      2, interp_nearest_output_names_char.data(),
-      interp_nearest_output_names_char.size());
-  std::vector<Ort::Value> bilinear_out = interp_bilinear_session_.Run(
-      Ort::RunOptions{nullptr}, interp_input_names.data(), interp_inputs.data(),
-      2, interp_bilinear_output_names_char.data(),
-      interp_bilinear_output_names_char.size());
-  float *nearest_scores = nearest_out[0].GetTensorMutableData<float>();
-  float *bilinear_scores = bilinear_out[0].GetTensorMutableData<float>();
+  std::vector<const char*> interp_bilinear_output_names_char;
+  for (const auto& name : interp_bilinear_output_names) interp_bilinear_output_names_char.push_back(name.c_str());
+  std::vector<Ort::Value> nearest_out = interp_nearest_session_.Run(Ort::RunOptions{nullptr},
+                                                                    interp_input_names.data(),
+                                                                    interp_inputs.data(),
+                                                                    2,
+                                                                    interp_nearest_output_names_char.data(),
+                                                                    interp_nearest_output_names_char.size());
+  std::vector<Ort::Value> bilinear_out = interp_bilinear_session_.Run(Ort::RunOptions{nullptr},
+                                                                      interp_input_names.data(),
+                                                                      interp_inputs.data(),
+                                                                      2,
+                                                                      interp_bilinear_output_names_char.data(),
+                                                                      interp_bilinear_output_names_char.size());
+  float* nearest_scores = nearest_out[0].GetTensorMutableData<float>();
+  float* bilinear_scores = bilinear_out[0].GetTensorMutableData<float>();
   cv::Mat scores_mat(mkpts_mat.rows, 1, CV_32F);
   for (int i = 0; i < mkpts_mat.rows; ++i) {
     scores_mat.at<float>(i, 0) = nearest_scores[i] * bilinear_scores[i];
@@ -345,14 +353,12 @@ XFeatONNX::DetectionResult XFeatONNX::detect_and_compute(Ort::Session &session,
   // Sort by scores and select top_k
   std::vector<int> idxs(mkpts_mat.rows);
   std::iota(idxs.begin(), idxs.end(), 0);
-  std::sort(idxs.begin(), idxs.end(), [&](int a, int b) {
-    return scores_mat.at<float>(a, 0) > scores_mat.at<float>(b, 0);
-  });
+  std::sort(
+      idxs.begin(), idxs.end(), [&](int a, int b) { return scores_mat.at<float>(a, 0) > scores_mat.at<float>(b, 0); });
   std::vector<cv::Point2f> topk_kpts;
   std::vector<float> topk_scores;
   for (int i = 0; i < std::min(top_k, (int)idxs.size()); ++i) {
-    topk_kpts.push_back(cv::Point2f(mkpts_mat.at<float>(idxs[i], 0),
-                                    mkpts_mat.at<float>(idxs[i], 1)));
+    topk_kpts.push_back(cv::Point2f(mkpts_mat.at<float>(idxs[i], 0), mkpts_mat.at<float>(idxs[i], 1)));
     topk_scores.push_back(scores_mat.at<float>(idxs[i], 0));
   }
   // Interpolate for features (bicubic)
@@ -367,51 +373,47 @@ XFeatONNX::DetectionResult XFeatONNX::detect_and_compute(Ort::Session &session,
     throw std::runtime_error("topk_kpts_mat buffer size does not match shape");
   }
   Ort::Value topk_kpts_tensor = Ort::Value::CreateTensor<float>(
-      allocator.GetInfo(), (float *)topk_kpts_mat.ptr<float>(), topk_numel,
-      topk_shape.data(), topk_shape.size());
+      allocator.GetInfo(), (float*)topk_kpts_mat.ptr<float>(), topk_numel, topk_shape.data(), topk_shape.size());
   std::vector<int64_t> M1_shape_interp = {1, C, H, W};
   size_t M1_numel = 1 * C * H * W;
   // Convert M1_normed (H, W, C) to (C, H, W) contiguous buffer
   std::vector<float> M1_chw(C * H * W);
   std::vector<cv::Mat> M1_split;
-  cv::split(M1_normed, M1_split); // M1_split: C x (H,W)
+  cv::split(M1_normed, M1_split);  // M1_split: C x (H,W)
   for (int c = 0; c < C; c++) {
-    std::memcpy(&M1_chw[c * H * W], M1_split[c].ptr<float>(),
-                H * W * sizeof(float));
+    std::memcpy(&M1_chw[c * H * W], M1_split[c].ptr<float>(), H * W * sizeof(float));
   }
   if (M1_chw.size() != M1_numel) {
     throw std::runtime_error("M1_chw buffer size does not match shape");
   }
   Ort::Value M1_tensor_interp = Ort::Value::CreateTensor<float>(
-      allocator.GetInfo(), M1_chw.data(), M1_numel, M1_shape_interp.data(),
-      M1_shape_interp.size());
+      allocator.GetInfo(), M1_chw.data(), M1_numel, M1_shape_interp.data(), M1_shape_interp.size());
   std::vector<Ort::Value> bicubic_inputs;
   bicubic_inputs.push_back(std::move(M1_tensor_interp));
   bicubic_inputs.push_back(std::move(topk_kpts_tensor));
   // Fetch actual output node names for bicubic interpolator
   auto interp_bicubic_output_names = interp_bicubic_session_.GetOutputNames();
-  std::vector<const char *> interp_bicubic_output_names_char;
-  for (const auto &name : interp_bicubic_output_names)
-    interp_bicubic_output_names_char.push_back(name.c_str());
-  std::vector<Ort::Value> feats_out = interp_bicubic_session_.Run(
-      Ort::RunOptions{nullptr}, interp_input_names.data(),
-      bicubic_inputs.data(), 2, interp_bicubic_output_names_char.data(),
-      interp_bicubic_output_names_char.size());
-  float *feats_ptr = feats_out[0].GetTensorMutableData<float>();
+  std::vector<const char*> interp_bicubic_output_names_char;
+  for (const auto& name : interp_bicubic_output_names) interp_bicubic_output_names_char.push_back(name.c_str());
+  std::vector<Ort::Value> feats_out = interp_bicubic_session_.Run(Ort::RunOptions{nullptr},
+                                                                  interp_input_names.data(),
+                                                                  bicubic_inputs.data(),
+                                                                  2,
+                                                                  interp_bicubic_output_names_char.data(),
+                                                                  interp_bicubic_output_names_char.size());
+  float* feats_ptr = feats_out[0].GetTensorMutableData<float>();
   int feat_dim = C;
   int n_kpts = topk_kpts.size();
   cv::Mat feats_mat(n_kpts, feat_dim, CV_32F, feats_ptr);
   // L2 normalize feats
   for (int i = 0; i < n_kpts; ++i) {
     float norm = 0.0f;
-    for (int j = 0; j < feat_dim; ++j)
-      norm += feats_mat.at<float>(i, j) * feats_mat.at<float>(i, j);
+    for (int j = 0; j < feat_dim; ++j) norm += feats_mat.at<float>(i, j) * feats_mat.at<float>(i, j);
     norm = std::sqrt(norm) + 1e-8f;
-    for (int j = 0; j < feat_dim; ++j)
-      feats_mat.at<float>(i, j) /= norm;
+    for (int j = 0; j < feat_dim; ++j) feats_mat.at<float>(i, j) /= norm;
   }
   // Scale keypoints
-  for (auto &pt : topk_kpts) {
+  for (auto& pt : topk_kpts) {
     pt.x *= resize_rate_w;
     pt.y *= resize_rate_h;
   }
@@ -440,34 +442,46 @@ XFeatONNX::DetectionResult XFeatONNX::detect_and_compute(Ort::Session &session,
   det.keypoints = valid_kpts_mat;
   det.scores = valid_scores_mat;
   det.descriptors = valid_feats_mat;
-  return det; // Placeholder
+  return det;  // Placeholder
 }
 
 // match_mkpts: rewritten to match the logic of the Python version
-std::tuple<std::vector<int>, std::vector<int>>
-XFeatONNX::match_mkpts(const cv::Mat &feats1, const cv::Mat &feats2,
-                       float min_cossim) {
+std::tuple<std::vector<int>, std::vector<int>> XFeatONNX::match_mkpts(const cv::Mat& feats1,
+                                                                      const cv::Mat& feats2,
+                                                                      float min_cossim) {
   int N1 = feats1.rows;
   int N2 = feats2.rows;
-  cv::Mat cossim = feats1 * feats2.t();   // (N1, N2)
-  cv::Mat cossim_t = feats2 * feats1.t(); // (N2, N1)
+  auto t0 = std::chrono::high_resolution_clock::now();
+  cv::Mat cossim = feats1 * feats2.t();    // (N1, N2)
+  cv::Mat cossim_t = feats2 * feats1.t();  // (N2, N1)
+  auto t1 = std::chrono::high_resolution_clock::now();
+  std::stringstream ss;
+  // print matrix size
+  for (int dim = 0; dim < feats1.dims; ++dim) {
+    ss << feats1.size[dim];
+    if (dim < feats1.dims - 1) ss << "x";
+  }
+  std::cout << "Cossim matrix size: " << ss.str() << std::endl;
+  std::cout << "Cossim computation time: " << std::chrono::duration<double, std::milli>(t1 - t0).count() << " ms"
+            << std::endl;
 
   std::vector<int> match12(N1), match21(N2);
-  for (int i = 0; i < N1; ++i) {
+  tbb::parallel_for(0, N1, [&](int i) {
     double maxVal;
     cv::Point maxLoc;
     cv::minMaxLoc(cossim.row(i), nullptr, &maxVal, nullptr, &maxLoc);
     match12[i] = maxLoc.x;
-  }
-  for (int i = 0; i < N2; ++i) {
+  });
+  tbb::parallel_for(0, N2, [&](int i) {
     double maxVal;
     cv::Point maxLoc;
     cv::minMaxLoc(cossim_t.row(i), nullptr, &maxVal, nullptr, &maxLoc);
     match21[i] = maxLoc.x;
-  }
+  });
 
   std::vector<int> idx0, idx1;
-  for (int i = 0; i < N1; ++i) {
+  tbb::mutex idx_mutex;
+  tbb::parallel_for(0, N1, [&](int i) {
     int j = match12[i];
     if (j >= 0 && j < N2 && match21[j] == i) {
       if (min_cossim > 0) {
@@ -479,42 +493,67 @@ XFeatONNX::match_mkpts(const cv::Mat &feats1, const cv::Mat &feats2,
           }
         }
         if (max_cossim > min_cossim) {
+          tbb::mutex::scoped_lock lock(idx_mutex);
           idx0.push_back(i);
           idx1.push_back(j);
         }
       } else {
+        tbb::mutex::scoped_lock lock(idx_mutex);
         idx0.push_back(i);
         idx1.push_back(j);
       }
     }
-  }
+  });
   return {idx0, idx1};
 }
 
-// Placeholder for XFeatONNX::match
-std::tuple<cv::Mat, cv::Mat, cv::Mat, cv::Mat>
-XFeatONNX::match(const cv::Mat &image1, const cv::Mat &image2, int top_k,
-                 float min_cossim) {
+std::tuple<cv::Mat, cv::Mat, cv::Mat, cv::Mat> XFeatONNX::match(const cv::Mat& image1,
+                                                                const cv::Mat& image2,
+                                                                int top_k,
+                                                                float min_cossim,
+                                                                TimingStats* timing_stats) {
+  auto t0 = std::chrono::high_resolution_clock::now();
   auto result1 = detect_and_compute(xfeat_session_, image1, top_k);
+  auto t1 = std::chrono::high_resolution_clock::now();
   auto result2 = detect_and_compute(xfeat_session_, image2, top_k);
+  auto t2 = std::chrono::high_resolution_clock::now();
 
-  return match(result1, result2, image1, top_k, min_cossim);
+  auto match_start = std::chrono::high_resolution_clock::now();
+  auto match_result = match(result1, result2, image1, top_k, min_cossim, timing_stats);
+  auto match_end = std::chrono::high_resolution_clock::now();
+
+  if (timing_stats) {
+    (*timing_stats)["detect1"] = std::chrono::duration<double, std::milli>(t1 - t0).count();
+    (*timing_stats)["detect2"] = std::chrono::duration<double, std::milli>(t2 - t1).count();
+    (*timing_stats)["match"] = std::chrono::duration<double, std::milli>(match_end - match_start).count();
+    (*timing_stats)["total"] = std::chrono::duration<double, std::milli>(match_end - t0).count();
+  }
+
+  return match_result;
 }
 
 // Overload: match using DetectionResult directly
-std::tuple<cv::Mat, cv::Mat, cv::Mat, cv::Mat>
-XFeatONNX::match(const XFeatONNX::DetectionResult &result1,
-                 const XFeatONNX::DetectionResult &result2,
-                 const cv::Mat &image1, int top_k, float min_cossim) {
+std::tuple<cv::Mat, cv::Mat, cv::Mat, cv::Mat> XFeatONNX::match(const XFeatONNX::DetectionResult& result1,
+                                                                const XFeatONNX::DetectionResult& result2,
+                                                                const cv::Mat& image1,
+                                                                int top_k,
+                                                                float min_cossim,
+                                                                TimingStats* timing_stats) {
   if (result1.keypoints.empty() || result2.keypoints.empty()) {
-    std::cerr << "Detection failed for one or both DetectionResults."
-              << std::endl;
+    std::cerr << "Detection failed for one or both DetectionResults." << std::endl;
     return {};
   }
 
-  auto [indexes1, indexes2] =
-      match_mkpts(result1.descriptors, result2.descriptors, min_cossim);
+  std::vector<int> indexes1, indexes2;
+  auto t0 = std::chrono::high_resolution_clock::now();
+  std::tie(indexes1, indexes2) = match_mkpts(result1.descriptors, result2.descriptors, min_cossim);
+  auto t1 = std::chrono::high_resolution_clock::now();
 
+  if (timing_stats) {
+    (*timing_stats)["match_mkpts"] = std::chrono::duration<double, std::milli>(t1 - t0).count();
+  }
+
+  t0 = std::chrono::high_resolution_clock::now();
   // Select matched keypoints
   cv::Mat mkpts0(indexes1.size(), 2, CV_32F);
   cv::Mat mkpts1(indexes2.size(), 2, CV_32F);
@@ -526,8 +565,7 @@ XFeatONNX::match(const XFeatONNX::DetectionResult &result1,
   }
 
   // Filter matches using homography (RANSAC)
-  auto [warped_corners, keypoints1, keypoints2, matches] =
-      calc_warp_corners_and_matches(mkpts0, mkpts1, image1);
+  auto [warped_corners, keypoints1, keypoints2, matches] = calc_warp_corners_and_matches(mkpts0, mkpts1, image1);
 
   // Convert filtered keypoints back to cv::Mat for return
   cv::Mat filtered_mkpts0((int)matches.size(), 2, CV_32F);
@@ -538,22 +576,21 @@ XFeatONNX::match(const XFeatONNX::DetectionResult &result1,
     filtered_mkpts1.at<float>(i, 0) = keypoints2[i].pt.x;
     filtered_mkpts1.at<float>(i, 1) = keypoints2[i].pt.y;
   }
+  auto t2 = std::chrono::high_resolution_clock::now();
+  if (timing_stats) {
+    (*timing_stats)["calc_warp_corners"] = std::chrono::duration<double, std::milli>(t2 - t0).count();
+  }
 
-  return std::make_tuple(filtered_mkpts0, filtered_mkpts1, result1.keypoints,
-                         result2.keypoints);
+  return std::make_tuple(filtered_mkpts0, filtered_mkpts1, result1.keypoints, result2.keypoints);
 }
 
 // Calculate warped corners and matches using homography (like the Python
 // version)
-std::tuple<cv::Mat, std::vector<cv::KeyPoint>, std::vector<cv::KeyPoint>,
-           std::vector<cv::DMatch>>
-XFeatONNX::calc_warp_corners_and_matches(const cv::Mat &ref_points,
-                                         const cv::Mat &dst_points,
-                                         const cv::Mat &image1) {
+std::tuple<cv::Mat, std::vector<cv::KeyPoint>, std::vector<cv::KeyPoint>, std::vector<cv::DMatch>>
+XFeatONNX::calc_warp_corners_and_matches(const cv::Mat& ref_points, const cv::Mat& dst_points, const cv::Mat& image1) {
   // Compute homography (use cv::RANSAC as int for compatibility)
   cv::Mat mask;
-  cv::Mat H = cv::findHomography(ref_points, dst_points, cv::RANSAC, 3.5, mask,
-                                 2000, 0.999);
+  cv::Mat H = cv::findHomography(ref_points, dst_points, cv::RANSAC, 3.5, mask, 2000, 0.999);
   if (H.empty()) {
     std::cerr << "Homography estimation failed." << std::endl;
     return {};
@@ -563,10 +600,8 @@ XFeatONNX::calc_warp_corners_and_matches(const cv::Mat &ref_points,
   // Get corners of image1
   int h = image1.rows;
   int w = image1.cols;
-  std::vector<cv::Point2f> corners_image1 = {{0, 0},
-                                             {float(w - 1), 0},
-                                             {float(w - 1), float(h - 1)},
-                                             {0, float(h - 1)}};
+  std::vector<cv::Point2f> corners_image1 = {
+      {0, 0}, {float(w - 1), 0}, {float(w - 1), float(h - 1)}, {0, float(h - 1)}};
   std::vector<cv::Point2f> warped_corners;
   cv::perspectiveTransform(corners_image1, warped_corners, H);
   cv::Mat warped_corners_mat(warped_corners);
@@ -576,12 +611,14 @@ XFeatONNX::calc_warp_corners_and_matches(const cv::Mat &ref_points,
   std::vector<cv::DMatch> matches;
   for (int i = 0; i < ref_points.rows; ++i) {
     if (mask.at<uchar>(i)) {
-      keypoints1.emplace_back(ref_points.at<float>(i, 0),
-                              ref_points.at<float>(i, 1), 5);
-      keypoints2.emplace_back(dst_points.at<float>(i, 0),
-                              dst_points.at<float>(i, 1), 5);
+      keypoints1.emplace_back(ref_points.at<float>(i, 0), ref_points.at<float>(i, 1), 5);
+      keypoints2.emplace_back(dst_points.at<float>(i, 0), dst_points.at<float>(i, 1), 5);
       matches.emplace_back(i, i, 0);
     }
   }
   return {warped_corners_mat, keypoints1, keypoints2, matches};
+}
+
+XFeatONNX::DetectionResult XFeatONNX::detect_and_compute(const cv::Mat& image, int top_k) {
+  return detect_and_compute(xfeat_session_, image, top_k);
 }
