@@ -1,12 +1,12 @@
 // filepath:
 // /Users/mikexyl/Workspaces/onnx_ws/src/XFeat-Image-Matching-ONNX-Sample/main.cpp
 #include <iostream>
-#include <onnxruntime_cxx_api.h>
+#include <onnxruntime/core/session/onnxruntime_cxx_api.h>
 #include <opencv2/opencv.hpp>
 #include <string>
 #include <vector>
 
-#include "xfeat_onnx.h"
+#include "xfeat-cpp/xfeat_onnx.h"
 
 using namespace xfeat;
 

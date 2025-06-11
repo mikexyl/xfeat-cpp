@@ -1,4 +1,4 @@
-#include "xfeat_onnx.h"
+#include "xfeat-cpp/xfeat_onnx.h"
 
 #include <iostream>
 #include <numeric>
@@ -554,30 +554,6 @@ XFeatONNX::match(const cv::Mat &image1, const cv::Mat &image2, int top_k,
 
   DetectionResult result1 = result1_vec[0];
   DetectionResult result2 = result2_vec[0];
-
-  // Save descriptors as images for debugging
-  // Save only the first 20 descriptors as images for debugging, resized to 500px wide
-  if (!result1.descriptors.empty()) {
-    int nrows = std::min(20, result1.descriptors.rows);
-    cv::Mat desc_img1 = result1.descriptors.rowRange(0, nrows).clone();
-    cv::normalize(desc_img1, desc_img1, 0, 255, cv::NORM_MINMAX);
-    desc_img1.convertTo(desc_img1, CV_8U);
-    // Resize to 500px wide
-    int new_width = 500;
-    int new_height = static_cast<int>(desc_img1.rows * (500.0 / desc_img1.cols));
-    cv::resize(desc_img1, desc_img1, cv::Size(new_width, new_height), 0, 0, cv::INTER_NEAREST);
-    cv::imwrite("debug_descriptors1.png", desc_img1);
-  }
-  if (!result2.descriptors.empty()) {
-    int nrows = std::min(20, result2.descriptors.rows);
-    cv::Mat desc_img2 = result2.descriptors.rowRange(0, nrows).clone();
-    cv::normalize(desc_img2, desc_img2, 0, 255, cv::NORM_MINMAX);
-    desc_img2.convertTo(desc_img2, CV_8U);
-    int new_width = 500;
-    int new_height = static_cast<int>(desc_img2.rows * (500.0 / desc_img2.cols));
-    cv::resize(desc_img2, desc_img2, cv::Size(new_width, new_height), 0, 0, cv::INTER_NEAREST);
-    cv::imwrite("debug_descriptors2.png", desc_img2);
-  }
 
   auto [indexes1, indexes2] =
       match_mkpts(result1.descriptors, result2.descriptors, min_cossim);

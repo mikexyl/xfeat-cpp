@@ -1,0 +1,16 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>xfeat-cpp</name>
+  <version>0.0.1</version>
+  <description>aria_common</description>
+
+  <maintainer email="liu.xiangyu@ucy.ac.cy">Mike Xiangyu Liu</maintainer>
+  <license>BSD</license>
+
+  <buildtool_depend>cmake</buildtool_depend>
+
+  <export>
+    <!-- Specify that this is not really a catkin package-->
+    <build_type>cmake</build_type>
+  </export>
+</package>

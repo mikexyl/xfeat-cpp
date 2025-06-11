@@ -163,3 +163,6 @@ cython_debug/
 *.bat
 
 *.png
+
+.cache
+compile_commands.json

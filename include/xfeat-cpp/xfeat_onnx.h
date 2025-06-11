@@ -1,6 +1,6 @@
 #pragma once
 
-#include "onnxruntime_cxx_api.h"
+#include "onnxruntime/core/session/onnxruntime_cxx_api.h"
 #include <opencv2/core/mat.hpp>
 #include <string>
 namespace xfeat {

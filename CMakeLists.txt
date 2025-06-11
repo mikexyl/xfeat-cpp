@@ -1,28 +1,40 @@
 cmake_minimum_required(VERSION 3.10)
-project(XFeatONNXSample)
+project(xfeat-cpp)
 
-set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED True)
+
+# include the cmake modules
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
 
 # Find OpenCV
 find_package(OpenCV REQUIRED)
 include_directories(${OpenCV_INCLUDE_DIRS})
 
-# Set ONNX Runtime paths
-option(ONNXRUNTIME_ROOTDIR ${CMAKE_SOURCE_DIR}/../onnxruntime-osx-arm64-1.22.0)
-set(ONNXRUNTIME_INCLUDE_DIR ${ONNXRUNTIME_ROOTDIR}/include)
-set(ONNXRUNTIME_LIBRARY ${ONNXRUNTIME_ROOTDIR}/lib/libonnxruntime.so)
+find_package(onnxruntime REQUIRED)
 
-include_directories(${ONNXRUNTIME_INCLUDE_DIR})
+include_directories(${onnxruntime_INCLUDE_DIR})
 
-add_executable(XFeatONNXSample main.cpp xfeat_onnx.cpp)
+add_library(${PROJECT_NAME} src/xfeat_onnx.cpp)
 
-target_link_libraries(XFeatONNXSample 
+target_link_libraries(${PROJECT_NAME}
     PRIVATE
     ${OpenCV_LIBS} 
-    ${ONNXRUNTIME_LIBRARY}
+    ${onnxruntime_LIBRARY}
 )
 
-# Optional: Add compiler flags for optimization or debugging
-# target_compile_options(XFeatONNXSample PRIVATE -O2) # Example for release
-# target_compile_options(XFeatONNXSample PRIVATE -g)   # Example for debug
+target_include_directories(${PROJECT_NAME}
+    PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:include>
+)
+
+add_subdirectory(examples)
+
+install(TARGETS ${PROJECT_NAME}
+    ARCHIVE DESTINATION lib
+    LIBRARY DESTINATION lib
+    RUNTIME DESTINATION bin
+)
+
+install(DIRECTORY include/ DESTINATION include)
