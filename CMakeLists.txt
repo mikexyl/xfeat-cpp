@@ -11,7 +11,9 @@ find_package(OpenCV REQUIRED)
 find_package(onnxruntime REQUIRED)
 find_package(TBB REQUIRED)
 
-add_library(${PROJECT_NAME} src/xfeat_onnx.cpp)
+add_library(${PROJECT_NAME}
+src/xfeat_onnx.cpp
+src/lighterglue_onnx.cpp)
 
 target_link_libraries(${PROJECT_NAME}
     PRIVATE
