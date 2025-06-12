@@ -546,7 +546,7 @@ std::tuple<cv::Mat, cv::Mat, cv::Mat, cv::Mat> XFeatONNX::match(const XFeatONNX:
 
   std::vector<int> indexes1, indexes2;
   auto t0 = std::chrono::high_resolution_clock::now();
-  std::tie(indexes1, indexes2) = match_mkpts(result1.descriptors, result2.descriptors, min_cossim);
+  std::tie(indexes1, indexes2) = match_mkpts_flann(result1.descriptors, result2.descriptors, min_cossim);
   auto t1 = std::chrono::high_resolution_clock::now();
 
   if (timing_stats) {
@@ -621,4 +621,49 @@ XFeatONNX::calc_warp_corners_and_matches(const cv::Mat& ref_points, const cv::Ma
 
 XFeatONNX::DetectionResult XFeatONNX::detect_and_compute(const cv::Mat& image, int top_k) {
   return detect_and_compute(xfeat_session_, image, top_k);
+}
+
+std::tuple<std::vector<int>, std::vector<int>> XFeatONNX::match_mkpts_flann(const cv::Mat& feats1,
+                                                                            const cv::Mat& feats2,
+                                                                            float min_cossim) {
+  // Implementation using FLANN matcher with mutual nearest neighbor and min_cossim threshold
+  cv::Mat desc1 = feats1;
+  if (desc1.type() != CV_32F) desc1.convertTo(desc1, CV_32F);
+  cv::Mat desc2 = feats2;
+  if (desc2.type() != CV_32F) desc2.convertTo(desc2, CV_32F);
+
+  cv::FlannBasedMatcher matcher;
+  // Match descriptors 1->2 and 2->1
+  std::vector<cv::DMatch> matches12;
+  matcher.match(desc1, desc2, matches12);
+  std::vector<cv::DMatch> matches21;
+  matcher.match(desc2, desc1, matches21);
+
+  std::vector<int> idx0, idx1;
+  idx0.reserve(matches12.size());
+  idx1.reserve(matches12.size());
+
+  // Convert min_cossim to a distance threshold
+  float maxDist = 0.0f;
+  if (min_cossim > 0.0f) {
+      maxDist = std::sqrt(std::max(0.0f, 2.0f * (1.0f - min_cossim)));
+  }
+
+  // Mutual nearest neighbor check
+  for (size_t i = 0; i < matches12.size(); ++i) {
+      int j = matches12[i].trainIdx;
+      if (j >= 0 && j < (int)matches21.size() && matches21[j].trainIdx == (int)i) {
+          float dist = matches12[i].distance;
+          if (min_cossim > 0.0f) {
+              if (dist <= maxDist) {
+                  idx0.push_back((int)i);
+                  idx1.push_back(j);
+              }
+          } else {
+              idx0.push_back((int)i);
+              idx1.push_back(j);
+          }
+      }
+  }
+  return {idx0, idx1};
 }

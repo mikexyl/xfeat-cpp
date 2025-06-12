@@ -71,5 +71,9 @@ class XFeatONNX {
   std::tuple<std::vector<int>, std::vector<int>> match_mkpts(const cv::Mat& feats1,
                                                              const cv::Mat& feats2,
                                                              float min_cossim = 0.82f);
+
+  std::tuple<std::vector<int>, std::vector<int>> match_mkpts_flann(const cv::Mat& feats1,
+                                                                   const cv::Mat& feats2,
+                                                                   float min_cossim = 0.82f);
 };
 }  // namespace xfeat
