@@ -38,11 +38,6 @@ class LighterGlueOnnx {
     std::vector<std::array<int64_t, 2>> matches;
     std::vector<float> scores;
     run(mkpts0, feats0, image0_size, mkpts1, feats1, image1_size, matches, scores, mkpts0.size() / 2);
-    // print matches
-    std::cout << "LighterGlue matches: " << matches.size() << std::endl;
-    for (const auto& match : matches) {
-      std::cout << "Match: (" << match[0] << ", " << match[1] << ")" << std::endl;
-    }
     return {matches, scores};
   }
 
@@ -50,7 +45,8 @@ class LighterGlueOnnx {
   std::tuple<std::vector<int>, std::vector<int>> match(const DetectionResult& det0,
                                                        const std::array<float, 2>& image0_size,
                                                        const DetectionResult& det1,
-                                                       const std::array<float, 2>& image1_size) {
+                                                       const std::array<float, 2>& image1_size,
+                                                       float min_score = 0.5) {
     std::cout << "LighterGlueOnnx::match called with DetectionResult" << std::endl;
     // Assume det0.keypoints: CV_32FC2, det0.descriptors: CV_32FC1 or CV_32FC64
     std::vector<float> mkpts0, feats0, mkpts1, feats1;
@@ -61,10 +57,11 @@ class LighterGlueOnnx {
     feats1.assign((float*)det1.descriptors.datastart, (float*)det1.descriptors.dataend);
 
     auto [matches, scores] = match(mkpts0, feats0, image0_size, mkpts1, feats1, image1_size);
-    std::vector<int> idx0(matches.size()), idx1(matches.size());
+    std::vector<int> idx0, idx1;
     for (size_t i = 0; i < matches.size(); ++i) {
-      idx0[i] = matches[i][0];
-      idx1[i] = matches[i][1];
+      if (scores[i] < min_score) continue;  // Filter by score
+      idx0.push_back(matches[i][0]);
+      idx1.push_back(matches[i][1]);
     }
     return {idx0, idx1};
   }

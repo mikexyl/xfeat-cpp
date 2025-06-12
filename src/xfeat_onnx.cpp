@@ -554,7 +554,7 @@ std::tuple<cv::Mat, cv::Mat, cv::Mat, cv::Mat> XFeatONNX::match(const DetectionR
                                                                 const DetectionResult& result2,
                                                                 const cv::Mat& image1,
                                                                 int top_k,
-                                                                float min_cossim,
+                                                                float min_sim,
                                                                 TimingStats* timing_stats) {
   if (result1.keypoints.empty() || result2.keypoints.empty()) {
     std::cerr << "Detection failed for one or both DetectionResults." << std::endl;
@@ -565,10 +565,10 @@ std::tuple<cv::Mat, cv::Mat, cv::Mat, cv::Mat> XFeatONNX::match(const DetectionR
   auto t0 = std::chrono::high_resolution_clock::now();
   switch (matcher_type_) {
     case MatcherType::BF:
-      std::tie(indexes1, indexes2) = match_mkpts_bf(result1.descriptors, result2.descriptors, min_cossim);
+      std::tie(indexes1, indexes2) = match_mkpts_bf(result1.descriptors, result2.descriptors, min_sim);
       break;
     case MatcherType::FLANN:
-      std::tie(indexes1, indexes2) = match_mkpts_flann(result1.descriptors, result2.descriptors, min_cossim);
+      std::tie(indexes1, indexes2) = match_mkpts_flann(result1.descriptors, result2.descriptors, min_sim);
       break;
     case MatcherType::LIGHTERGLUE:
       if (!lighterglue_) {
@@ -576,7 +576,7 @@ std::tuple<cv::Mat, cv::Mat, cv::Mat, cv::Mat> XFeatONNX::match(const DetectionR
       }
       std::array<float, 2> image_size0{static_cast<float>(input_width_), static_cast<float>(input_height_)};
       std::array<float, 2> image_size1{static_cast<float>(input_width_), static_cast<float>(input_height_)};
-      std::tie(indexes1, indexes2) = lighterglue_->match(result1, image_size0, result2, image_size1);
+      std::tie(indexes1, indexes2) = lighterglue_->match(result1, image_size0, result2, image_size1, min_sim);
       break;
   }
 
