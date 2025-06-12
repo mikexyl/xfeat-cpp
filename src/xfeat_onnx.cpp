@@ -235,7 +235,10 @@ cv::Mat XFeatONNX::nms(const cv::Mat& heatmap, float threshold, int kernel_size)
   return kpt_mat;
 }
 
-DetectionResult XFeatONNX::detect_and_compute(Ort::Session& session, const cv::Mat& image, int top_k) {
+DetectionResult XFeatONNX::detect_and_compute(Ort::Session& session,
+                                              const cv::Mat& image,
+                                              int top_k,
+                                              cv::Mat* heatmap) {
   auto [input_tensor, resize_rate_w, resize_rate_h] = preprocess_image(image);
 
   auto input_node_names = session.GetInputNames();
@@ -302,12 +305,9 @@ DetectionResult XFeatONNX::detect_and_compute(Ort::Session& session, const cv::M
   cv::Mat K1h = get_kpts_heatmap(K1_tensor);
 
   // Save heatmap for debugging
-  static int heatmap_save_counter = 1;
-  cv::Mat K1h_norm, K1h_u8;
-  cv::normalize(K1h, K1h_norm, 0, 255, cv::NORM_MINMAX);
-  K1h_norm.convertTo(K1h_u8, CV_8U);
-  std::string fname = "debug_heatmap_cpp_" + std::to_string(heatmap_save_counter++) + ".png";
-  cv::imwrite(fname, K1h_u8);
+  if (heatmap) {
+    *heatmap = K1h.clone();  // Copy to output heatmap
+  }
 
   // NMS on K1h (upsampled heatmap)
   cv::Mat mkpts_mat = nms(K1h, 0.05, 5);  // Pass K1h (cv::Mat), not K1_tensor
@@ -525,11 +525,13 @@ std::tuple<cv::Mat, cv::Mat, cv::Mat, cv::Mat> XFeatONNX::match(const cv::Mat& i
                                                                 const cv::Mat& image2,
                                                                 int top_k,
                                                                 float min_cossim,
+                                                                cv::Mat* heatmap1,
+                                                                cv::Mat* heatmap2,
                                                                 TimingStats* timing_stats) {
   auto t0 = std::chrono::high_resolution_clock::now();
-  auto result1 = detect_and_compute(xfeat_session_, image1, top_k);
+  auto result1 = detect_and_compute(xfeat_session_, image1, top_k, heatmap1);
   auto t1 = std::chrono::high_resolution_clock::now();
-  auto result2 = detect_and_compute(xfeat_session_, image2, top_k);
+  auto result2 = detect_and_compute(xfeat_session_, image2, top_k, heatmap2);
   auto t2 = std::chrono::high_resolution_clock::now();
 
   std::cout << "detected keypoints in image1: " << result1.keypoints.rows << ", image2: " << result2.keypoints.rows
@@ -643,8 +645,8 @@ XFeatONNX::calc_warp_corners_and_matches(const cv::Mat& ref_points, const cv::Ma
   return {keypoints1, keypoints2, matches};
 }
 
-DetectionResult XFeatONNX::detect_and_compute(const cv::Mat& image, int top_k) {
-  return detect_and_compute(xfeat_session_, image, top_k);
+DetectionResult XFeatONNX::detect_and_compute(const cv::Mat& image, int top_k, cv::Mat* heatmap) {
+  return detect_and_compute(xfeat_session_, image, top_k, heatmap);
 }
 
 std::tuple<std::vector<int>, std::vector<int>> XFeatONNX::match_mkpts_flann(const cv::Mat& feats1,
