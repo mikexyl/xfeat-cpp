@@ -50,13 +50,14 @@ void LighterGlueOnnx::run(const std::vector<float>& mkpts0,
                           const std::vector<float>& feats1,
                           const std::array<float, 2>& image1_size,
                           std::vector<std::array<int64_t, 2>>& matches,
-                          std::vector<float>& scores) {
+                          std::vector<float>& scores,
+                          int num_feat) {
   std::cout << "Running LighterGlue ONNX inference..." << std::endl;
   Ort::AllocatorWithDefaultOptions allocator;
 
   // Define tensor shapes
-  std::array<int64_t, 3> dims_kp = {1, 500, 2};
-  std::array<int64_t, 3> dims_feat = {1, 500, 64};
+  std::array<int64_t, 3> dims_kp = {1, num_feat, 2};
+  std::array<int64_t, 3> dims_feat = {1, num_feat, 64};
   std::array<int64_t, 1> dims_size = {2};
 
   // Create Ort tensors for inputs

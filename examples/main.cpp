@@ -18,18 +18,23 @@ int main(int argc, char* argv[]) {
   std::filesystem::path image1_path = image_folder / "sample1.png";
   std::filesystem::path image2_path = image_folder / "sample2.png";
 
+  const std::string image_resolution = "640x352";
+  constexpr int max_kpts = 1000;  // Default maximum keypoints to detect
+
   std::filesystem::path xfeat_model_folder = (argc > 2) ? argv[2] : "onnx_model";
-  std::filesystem::path xfeat_model_path = xfeat_model_folder / "xfeat_640x480.onnx";
-  std::filesystem::path interp_bilinear_path = xfeat_model_folder / "interpolator_bilinear_640x480.onnx";
-  std::filesystem::path interp_bicubic_path = xfeat_model_folder / "interpolator_bicubic_640x480.onnx";
-  std::filesystem::path interp_nearest_path = xfeat_model_folder / "interpolator_nearest_640x480.onnx";
-  std::filesystem::path lighterglue_model_path = xfeat_model_folder / "lg_640x480_500.onnx";
+  std::filesystem::path xfeat_model_path = xfeat_model_folder / ("xfeat_" + image_resolution + ".onnx");
+  std::filesystem::path interp_bilinear_path =
+      xfeat_model_folder / ("interpolator_bilinear_" + image_resolution + ".onnx");
+  std::filesystem::path interp_bicubic_path =
+      xfeat_model_folder / ("interpolator_bicubic_" + image_resolution + ".onnx");
+  std::filesystem::path interp_nearest_path =
+      xfeat_model_folder / ("interpolator_nearest_" + image_resolution + ".onnx");
+  std::filesystem::path lighterglue_model_path =
+      xfeat_model_folder / ("lg_" + image_resolution + "_" + std::to_string(max_kpts) + ".onnx");
 
   const float min_cos = (argc > 3) ? std::stof(argv[3]) : -1.0f;
   const int matcher_type_int = (argc > 4) ? std::stoi(argv[4]) : static_cast<int>(XFeatONNX::MatcherType::BF);
   std::cout << "Using matcher type: " << matcher_type_int << std::endl;
-
-  constexpr int max_kpts = 500;  // Default maximum keypoints to detect
 
   auto matcher_type = static_cast<XFeatONNX::MatcherType>(matcher_type_int);
 

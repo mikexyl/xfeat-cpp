@@ -25,7 +25,8 @@ class LighterGlueOnnx {
            const std::vector<float>& feats1,
            const std::array<float, 2>& image1_size,
            std::vector<std::array<int64_t, 2>>& matches,
-           std::vector<float>& scores);
+           std::vector<float>& scores,
+           int num_feat = 500);
 
   // Convenience: run and return matches/scores as output
   std::pair<std::vector<std::array<int64_t, 2>>, std::vector<float>> match(const std::vector<float>& mkpts0,
@@ -36,7 +37,7 @@ class LighterGlueOnnx {
                                                                            const std::array<float, 2>& image1_size) {
     std::vector<std::array<int64_t, 2>> matches;
     std::vector<float> scores;
-    run(mkpts0, feats0, image0_size, mkpts1, feats1, image1_size, matches, scores);
+    run(mkpts0, feats0, image0_size, mkpts1, feats1, image1_size, matches, scores, mkpts0.size() / 2);
     // print matches
     std::cout << "LighterGlue matches: " << matches.size() << std::endl;
     for (const auto& match : matches) {

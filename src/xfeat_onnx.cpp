@@ -532,6 +532,9 @@ std::tuple<cv::Mat, cv::Mat, cv::Mat, cv::Mat> XFeatONNX::match(const cv::Mat& i
   auto result2 = detect_and_compute(xfeat_session_, image2, top_k);
   auto t2 = std::chrono::high_resolution_clock::now();
 
+  std::cout << "detected keypoints in image1: " << result1.keypoints.rows << ", image2: " << result2.keypoints.rows
+            << std::endl;
+
   auto match_start = std::chrono::high_resolution_clock::now();
   auto match_result = match(result1, result2, image1, top_k, min_cossim, timing_stats);
   auto match_end = std::chrono::high_resolution_clock::now();
