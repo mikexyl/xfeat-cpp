@@ -184,7 +184,7 @@ inline std::vector<cv::Vec2d> computeUncertaintySobel(const cv::Mat& heatmap,
                                                       cv::Mat* debug = nullptr) {
   CV_Assert(heatmap.type() == CV_32F || heatmap.type() == CV_64F);
 
-  static constexpr double kMaxStd = 8;
+  static constexpr double kMaxStd = 8 * 1.5;
 
   // 0) Max-pool via dilation with 8×8 structuring element
   cv::Mat pooled;
@@ -196,7 +196,7 @@ inline std::vector<cv::Vec2d> computeUncertaintySobel(const cv::Mat& heatmap,
 
   // 1) Stronger blur + log
   cv::Mat Hf;
-  cv::GaussianBlur(small, Hf, cv::Size(11, 11), 1.5, 1.5, cv::BORDER_REPLICATE);
+  cv::GaussianBlur(small, Hf, cv::Size(5, 5), 1.2, 1.2, cv::BORDER_REPLICATE);
   Hf.convertTo(Hf, CV_64F);
   Hf += eps;
   cv::log(Hf, Hf);
@@ -243,7 +243,7 @@ inline std::vector<cv::Vec2d> computeUncertaintySobel(const cv::Mat& heatmap,
       double gx = gradX.at<double>(v, u);
       double gy = gradY.at<double>(v, u);
       double gmag = std::sqrt(gx * gx + gy * gy);
-      double iso = (gmag > eps ? 1.0 / gmag : kMaxStd * kMaxStd);
+      double iso = (gmag > eps ? 1.0 / gmag : kMaxStd);
       sigmas.emplace_back(iso, iso);
       continue;
     }
@@ -255,8 +255,8 @@ inline std::vector<cv::Vec2d> computeUncertaintySobel(const cv::Mat& heatmap,
     // extract variances and clamp
     double vxx_cov = cov.at<double>(0, 0);
     double vyy_cov = cov.at<double>(1, 1);
-    double sx = (vxx_cov > 0 && std::isfinite(vxx_cov)) ? std::sqrt(vxx_cov) : kMaxStd;
-    double sy = (vyy_cov > 0 && std::isfinite(vyy_cov)) ? std::sqrt(vyy_cov) : kMaxStd;
+    double sx = (vxx_cov > 0 && std::isfinite(vxx_cov)) ? std::sqrt(vxx_cov) : 1;
+    double sy = (vyy_cov > 0 && std::isfinite(vyy_cov)) ? std::sqrt(vyy_cov) : 1;
 
     sigmas.emplace_back(sx * kMaxStd, sy * kMaxStd);
   }

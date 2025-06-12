@@ -146,6 +146,25 @@ int main(int argc, char* argv[]) {
         cv::imshow("Heatmap", heatmap_combined);
 
         cv::imshow("debug heatmap", debug_hm);
+
+        // print the std
+        std::cout << "Keypoint uncertainties (std):" << std::endl;
+        for (size_t i = 0; i < std1.size(); ++i) {
+          std::cout << std1.at(i) << " ";
+        }
+
+        std::cout << std::endl;
+        for (size_t i = 0; i < std2.size(); ++i) {
+          std::cout << std2.at(i) << " ";
+        }
+        std::cout << std::endl;
+
+        // plot the keypoints with uncertainties
+        for (size_t i = 0; i < kpts1.size(); ++i) {
+          cv::circle(out_img, kpts1[i].pt, static_cast<int>(std1[i][0]), cv::Scalar(255, 0, 0), 1);
+          cv::circle(
+              out_img, kpts2[i].pt + cv::Point2f(img1.cols, 0), static_cast<int>(std2[i][0]), cv::Scalar(255, 0, 0), 1);
+        }
       }
 
       cv::imshow("Matches", out_img);
