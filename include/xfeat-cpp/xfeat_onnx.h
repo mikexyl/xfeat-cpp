@@ -15,8 +15,6 @@ struct TimingStats : std::map<std::string, double> {};
 
 class XFeatONNX {
  public:
-  enum class MatcherType { BF = 0, FLANN = 1, LIGHTERGLUE = 2 };
-
   struct Params {
     std::string xfeat_path;
     std::string interp_bilinear_path;
@@ -44,8 +42,8 @@ class XFeatONNX {
             MatcherType matcher_type,
             const std::string& lighterglue_path = "");
 
-  std::tuple<cv::Mat, cv::Mat, cv::Mat, cv::Mat> match(const cv::Mat& image1,
-                                                       const cv::Mat& image2,
+  std::tuple<cv::Mat, cv::Mat, cv::Mat, cv::Mat> match(cv::Mat image1,
+                                                       cv::Mat image2,
                                                        int top_k = 4096,
                                                        float min_cossim = -1.0f,
                                                        cv::Mat* heatmap1 = nullptr,
@@ -54,7 +52,7 @@ class XFeatONNX {
 
   std::tuple<cv::Mat, cv::Mat, cv::Mat, cv::Mat> match(const DetectionResult& result1,
                                                        const DetectionResult& result2,
-                                                       const cv::Mat& image1,
+                                                       cv::Mat image1,
                                                        int top_k = 4096,
                                                        float min_cossim = -1.0f,
                                                        TimingStats* timing_stats = nullptr);
@@ -62,7 +60,7 @@ class XFeatONNX {
   std::tuple<std::vector<cv::KeyPoint>, std::vector<cv::KeyPoint>, std::vector<cv::DMatch>>
   calc_warp_corners_and_matches(const cv::Mat& ref_points, const cv::Mat& dst_points, const cv::Mat& image1);
 
-  DetectionResult detect_and_compute(const cv::Mat& image, int top_k = 4096, cv::Mat* heatmap = nullptr);
+  DetectionResult detect_and_compute(cv::Mat image, int top_k = 4096, cv::Mat* heatmap = nullptr);
 
  private:
   Ort::Env env_;
@@ -92,7 +90,7 @@ class XFeatONNX {
   cv::Mat nms(const cv::Mat& heatmap, float threshold = 0.05f, int kernel_size = 5);
 
   DetectionResult detect_and_compute(Ort::Session& session,
-                                     const cv::Mat& image,
+                                     cv::Mat image,
                                      int top_k = 4096,
                                      cv::Mat* heatmap = nullptr);
 

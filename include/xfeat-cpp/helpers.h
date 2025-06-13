@@ -1,8 +1,9 @@
 #pragma once
 
 #include <cmath>
-#include <opencv2/opencv.hpp>
+#include <opencv4/opencv2/imgproc.hpp>
 #include <vector>
+#include "opencv2/core.hpp"
 
 namespace xfeat {
 /**

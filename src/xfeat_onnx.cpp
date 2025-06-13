@@ -81,8 +81,21 @@ XFeatONNX::XFeatONNX(const std::string& xfeat_path,
 
 // Placeholder for preprocess_image
 std::tuple<cv::Mat, float, float> XFeatONNX::preprocess_image(const cv::Mat& image) {
+  // check if image empty
   cv::Mat input_image;
-  cv::resize(image, input_image, cv::Size(input_width_, input_height_));
+  if (image.empty()) {
+    throw std::runtime_error("Input image is empty.");
+  }
+  // if image is in gray scale, convert to BGR
+  if (image.channels() == 1) {
+    cv::cvtColor(image, input_image, cv::COLOR_GRAY2BGR);
+  } else if (image.channels() == 3) {
+    input_image = image.clone();  // BGR image
+  } else {
+    throw std::runtime_error("Input image must be either grayscale or BGR.");
+  }
+
+  cv::resize(input_image, input_image, cv::Size(input_width_, input_height_));
   input_image.convertTo(input_image, CV_32F, 1.0 / 255.0);
 
   // Convert HWC to CHW and batch dimension: (1, 3, H, W)
@@ -235,10 +248,7 @@ cv::Mat XFeatONNX::nms(const cv::Mat& heatmap, float threshold, int kernel_size)
   return kpt_mat;
 }
 
-DetectionResult XFeatONNX::detect_and_compute(Ort::Session& session,
-                                              const cv::Mat& image,
-                                              int top_k,
-                                              cv::Mat* heatmap) {
+DetectionResult XFeatONNX::detect_and_compute(Ort::Session& session, cv::Mat image, int top_k, cv::Mat* heatmap) {
   auto [input_tensor, resize_rate_w, resize_rate_h] = preprocess_image(image);
 
   auto input_node_names = session.GetInputNames();
@@ -521,8 +531,8 @@ std::tuple<std::vector<int>, std::vector<int>> XFeatONNX::match_mkpts_bf(const c
   return {idx0, idx1};
 }
 
-std::tuple<cv::Mat, cv::Mat, cv::Mat, cv::Mat> XFeatONNX::match(const cv::Mat& image1,
-                                                                const cv::Mat& image2,
+std::tuple<cv::Mat, cv::Mat, cv::Mat, cv::Mat> XFeatONNX::match(cv::Mat image1,
+                                                                cv::Mat image2,
                                                                 int top_k,
                                                                 float min_cossim,
                                                                 cv::Mat* heatmap1,
@@ -554,7 +564,7 @@ std::tuple<cv::Mat, cv::Mat, cv::Mat, cv::Mat> XFeatONNX::match(const cv::Mat& i
 // Overload: match using DetectionResult directly
 std::tuple<cv::Mat, cv::Mat, cv::Mat, cv::Mat> XFeatONNX::match(const DetectionResult& result1,
                                                                 const DetectionResult& result2,
-                                                                const cv::Mat& image1,
+                                                                cv::Mat image1,
                                                                 int top_k,
                                                                 float min_sim,
                                                                 TimingStats* timing_stats) {
@@ -645,7 +655,7 @@ XFeatONNX::calc_warp_corners_and_matches(const cv::Mat& ref_points, const cv::Ma
   return {keypoints1, keypoints2, matches};
 }
 
-DetectionResult XFeatONNX::detect_and_compute(const cv::Mat& image, int top_k, cv::Mat* heatmap) {
+DetectionResult XFeatONNX::detect_and_compute(cv::Mat image, int top_k, cv::Mat* heatmap) {
   return detect_and_compute(xfeat_session_, image, top_k, heatmap);
 }
 

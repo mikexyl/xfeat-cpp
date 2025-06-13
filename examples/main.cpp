@@ -34,13 +34,13 @@ int main(int argc, char* argv[]) {
       xfeat_model_folder / ("lg_" + image_resolution + "_" + std::to_string(max_kpts) + ".onnx");
 
   const float min_cos = (argc > 3) ? std::stof(argv[3]) : -1.0f;
-  const int matcher_type_int = (argc > 4) ? std::stoi(argv[4]) : static_cast<int>(XFeatONNX::MatcherType::BF);
+  const int matcher_type_int = (argc > 4) ? std::stoi(argv[4]) : static_cast<int>(MatcherType::BF);
   std::cout << "Using matcher type: " << matcher_type_int << std::endl;
 
-  auto matcher_type = static_cast<XFeatONNX::MatcherType>(matcher_type_int);
+  auto matcher_type = static_cast<MatcherType>(matcher_type_int);
 
-  cv::Mat image1 = cv::imread(image1_path, cv::IMREAD_COLOR);
-  cv::Mat image2 = cv::imread(image2_path, cv::IMREAD_COLOR);
+  cv::Mat image1 = cv::imread(image1_path, cv::IMREAD_GRAYSCALE);
+  cv::Mat image2 = cv::imread(image2_path, cv::IMREAD_GRAYSCALE);
 
   if (image1.empty() || image2.empty()) {
     std::cerr << "Error loading images! path: " << image1_path << " or " << image2_path << std::endl;

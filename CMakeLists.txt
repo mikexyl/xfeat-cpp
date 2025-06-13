@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.10)
 project(xfeat-cpp)
 
-set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED True)
 
 # include the cmake modules
@@ -11,12 +11,13 @@ find_package(OpenCV REQUIRED)
 find_package(onnxruntime REQUIRED)
 find_package(TBB REQUIRED)
 
-add_library(${PROJECT_NAME}
-src/xfeat_onnx.cpp
-src/lighterglue_onnx.cpp)
+add_library(${PROJECT_NAME} SHARED
+    src/xfeat_onnx.cpp
+    src/lighterglue_onnx.cpp
+    src/xfeat_cv.cpp)
 
 target_link_libraries(${PROJECT_NAME}
-    PRIVATE
+    PUBLIC
     ${OpenCV_LIBS}
     ${onnxruntime_LIBRARY}
     TBB::tbb
@@ -32,11 +33,38 @@ target_include_directories(${PROJECT_NAME}
 )
 
 add_subdirectory(examples)
+add_subdirectory(tests)
+
+include(CMakePackageConfigHelpers)
 
 install(TARGETS ${PROJECT_NAME}
+    EXPORT xfeat-cppTargets
     ARCHIVE DESTINATION lib
     LIBRARY DESTINATION lib
     RUNTIME DESTINATION bin
 )
 
+install(EXPORT xfeat-cppTargets
+    FILE xfeat-cppTargets.cmake
+    NAMESPACE xfeat-cpp::
+    DESTINATION lib/cmake/${PROJECT_NAME}
+)
+
 install(DIRECTORY include/ DESTINATION include)
+
+configure_package_config_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/cmake/xfeat-cppConfig.cmake.in"
+    "${CMAKE_CURRENT_BINARY_DIR}/xfeat-cppConfig.cmake"
+    INSTALL_DESTINATION lib/cmake/${PROJECT_NAME}
+)
+
+install(FILES
+    "${CMAKE_CURRENT_BINARY_DIR}/xfeat-cppConfig.cmake"
+    DESTINATION lib/cmake/${PROJECT_NAME}
+)
+
+# install Findonnxruntime.cmake
+install(FILES
+    "${CMAKE_CURRENT_SOURCE_DIR}/cmake/Findonnxruntime.cmake"
+    DESTINATION lib/cmake/${PROJECT_NAME}
+)
