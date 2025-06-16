@@ -18,13 +18,14 @@ XFeatONNX::XFeatONNX(const std::string& xfeat_path,
                      const std::string& interp_nearest_path,
                      bool use_gpu,
                      MatcherType matcher_type,
-                     const std::string& lighterglue_path)
+                     std::unique_ptr<LighterGlueOnnx> lighterglue)
     : env_(ORT_LOGGING_LEVEL_WARNING, "XFeatONNX"),
       xfeat_session_(nullptr),
       interp_bilinear_session_(nullptr),
       interp_bicubic_session_(nullptr),
       interp_nearest_session_(nullptr),
-      matcher_type_(matcher_type) {
+      matcher_type_(matcher_type),
+      lighterglue_(std::move(lighterglue)) {
   session_options_.SetIntraOpNumThreads(1);
   session_options_.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_EXTENDED);
   if (use_gpu) {
@@ -68,10 +69,9 @@ XFeatONNX::XFeatONNX(const std::string& xfeat_path,
   if (matcher_type_ == MatcherType::LIGHTERGLUE) {
     std::cout << "Using LIGHTERGLUE matcher type." << std::endl;
     // Load LighterGlue model if specified
-    if (lighterglue_path.empty()) {
+    if (not lighterglue_) {
       throw std::runtime_error("LighterGlue model path must be provided for LIGHTERGLUE matcher type.");
     }
-    lighterglue_ = std::make_unique<LighterGlueOnnx>(lighterglue_path, use_gpu);
   } else {
     lighterglue_.reset();
   }

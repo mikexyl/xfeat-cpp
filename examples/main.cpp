@@ -48,13 +48,17 @@ int main(int argc, char* argv[]) {
   }
 
   try {
-    XFeatONNX xfeat_onnx(XFeatONNX::Params{.xfeat_path = xfeat_model_path.string(),
-                                           .interp_bilinear_path = interp_bilinear_path.string(),
-                                           .interp_bicubic_path = interp_bicubic_path.string(),
-                                           .interp_nearest_path = interp_nearest_path.string(),
-                                           .use_gpu = true,
-                                           .matcher_type = matcher_type,
-                                           .lighterglue_path = lighterglue_model_path.string()});
+    auto lighterglue_model = std::make_unique<LighterGlueOnnx>(lighterglue_model_path.string(), true);
+    XFeatONNX xfeat_onnx(
+        XFeatONNX::Params{
+            .xfeat_path = xfeat_model_path.string(),
+            .interp_bilinear_path = interp_bilinear_path.string(),
+            .interp_bicubic_path = interp_bicubic_path.string(),
+            .interp_nearest_path = interp_nearest_path.string(),
+            .use_gpu = true,
+            .matcher_type = matcher_type,
+        },
+        std::move(lighterglue_model));
 
     xfeat_onnx.match(image1, image2, max_kpts);
 
@@ -170,7 +174,6 @@ int main(int argc, char* argv[]) {
       cv::imshow("Matches", out_img);
       cv::waitKey(0);
     }
-
   } catch (const Ort::Exception& e) {
     std::cerr << "ONNX Runtime Exception in main: " << e.what() << std::endl;
     return 1;

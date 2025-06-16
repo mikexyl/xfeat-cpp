@@ -22,17 +22,16 @@ class XFeatONNX {
     std::string interp_nearest_path;
     bool use_gpu = false;
     MatcherType matcher_type = MatcherType::FLANN;  // Default to BFMatcher
-    std::string lighterglue_path;                   // Optional, only used if matcher_type is LIGHTERGLUE
   };
 
-  XFeatONNX(const Params& params)
+  XFeatONNX(const Params& params, std::unique_ptr<LighterGlueOnnx> lighterglue = nullptr)
       : XFeatONNX(params.xfeat_path,
                   params.interp_bilinear_path,
                   params.interp_bicubic_path,
                   params.interp_nearest_path,
                   params.use_gpu,
                   params.matcher_type,
-                  params.lighterglue_path) {}
+                  std::move(lighterglue)) {}
 
   XFeatONNX(const std::string& xfeat_path,
             const std::string& interp_bilinear_path,
@@ -40,7 +39,7 @@ class XFeatONNX {
             const std::string& interp_nearest_path,
             bool use_gpu,
             MatcherType matcher_type,
-            const std::string& lighterglue_path = "");
+            std::unique_ptr<LighterGlueOnnx> lighterglue = nullptr);
 
   std::tuple<cv::Mat, cv::Mat, cv::Mat, cv::Mat> match(cv::Mat image1,
                                                        cv::Mat image2,

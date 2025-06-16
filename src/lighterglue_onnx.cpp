@@ -52,7 +52,6 @@ void LighterGlueOnnx::run(const std::vector<float>& mkpts0,
                           std::vector<std::array<int64_t, 2>>& matches,
                           std::vector<float>& scores,
                           int num_feat) {
-  std::cout << "Running LighterGlue ONNX inference..." << std::endl;
   Ort::AllocatorWithDefaultOptions allocator;
 
   // Define tensor shapes

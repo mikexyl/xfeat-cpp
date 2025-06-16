@@ -47,7 +47,6 @@ class LighterGlueOnnx {
                                                        const DetectionResult& det1,
                                                        const std::array<float, 2>& image1_size,
                                                        float min_score = 0.5) {
-    std::cout << "LighterGlueOnnx::match called with DetectionResult" << std::endl;
     // Assume det0.keypoints: CV_32FC2, det0.descriptors: CV_32FC1 or CV_32FC64
     std::vector<float> mkpts0, feats0, mkpts1, feats1;
     // Flatten keypoints and descriptors

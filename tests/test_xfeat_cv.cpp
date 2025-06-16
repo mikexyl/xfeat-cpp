@@ -4,6 +4,7 @@
 #include <opencv2/imgproc.hpp>
 #include <string>
 
+#include "xfeat-cpp/lighterglue_cv.h"
 #include "xfeat-cpp/xfeat_cv.h"
 
 using namespace xfeat;
@@ -52,4 +53,33 @@ TEST(XFeatCVTest, DetectAndComputeColor) {
   EXPECT_GT(keypoints.size(), 0);
   EXPECT_EQ(descriptors.rows, keypoints.size());
   EXPECT_EQ(descriptors.cols, xfeat->descriptorSize());
+}
+
+TEST(LighterGlueCVTest, MatchDetectionResults) {
+  // Dummy model path (replace with actual ONNX model for real test)
+  LighterGlueCV::Params params;
+  params.model_path = "/workspaces/src/xfeat-cpp/onnx_model/lg_640x352_500.onnx";
+  params.use_gpu = true;
+  params.min_score = 0.0f;
+  // Use OpenCV smart pointer to avoid abstract class instantiation
+  auto matcher = LighterGlueCV::create(params);
+
+  // Create dummy DetectionResult for two images
+  DetectionResult det0, det1;
+  int num_kpts = 500;
+  det0.keypoints = cv::Mat(num_kpts, 2, CV_32F);
+  det0.descriptors = cv::Mat(num_kpts, 64, CV_32F);
+  det1.keypoints = cv::Mat(num_kpts, 2, CV_32F);
+  det1.descriptors = cv::Mat(num_kpts, 64, CV_32F);
+  cv::randu(det0.keypoints, 0, 100);
+  cv::randu(det1.keypoints, 0, 100);
+  cv::randu(det0.descriptors, 0, 1);
+  cv::randu(det1.descriptors, 0, 1);
+
+  // Image sizes
+  cv::Size size0(640, 352), size1(640, 352);
+
+  // Run match
+  std::vector<cv::DMatch> matches;
+  matcher->match(det0, size0, det1, size1, matches);
 }

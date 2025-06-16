@@ -24,6 +24,12 @@ class XFeatCV : public cv::Feature2D {
                         CV_OUT std::vector<KeyPoint>& keypoints,
                         OutputArray descriptors,
                         bool useProvidedKeypoints = false) CV_OVERRIDE {
+    if (not descriptors.empty()) {
+      CV_Error(Error::StsBadArg, "Output descriptors must be empty.");
+    }
+    // check descriptors are not fixed size
+    CV_Assert(descriptors.empty() || descriptors.type() == CV_32F);
+
     // Ensure the input image is valid
     CV_Assert(image.type() == CV_8UC1 || image.type() == CV_8UC3);
     // Clear keypoints and descriptors
@@ -37,10 +43,11 @@ class XFeatCV : public cv::Feature2D {
       keypoints.push_back(kp);
     }
     if (!result.descriptors.empty()) {
-      descriptors.create(result.descriptors.rows, result.descriptors.cols, CV_32F);
+      // copy the descriptors to the output
+      CV_Assert(result.descriptors.type() == CV_32F);
+      CV_Assert(result.descriptors.rows == keypoints.size());
+      CV_Assert(result.descriptors.cols == 64);  // Assuming 64-dimensional descriptors
       result.descriptors.copyTo(descriptors);
-    } else {
-      descriptors.release();
     }
   }
 
