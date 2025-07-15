@@ -59,7 +59,11 @@ class XFeatONNX {
   std::tuple<std::vector<cv::KeyPoint>, std::vector<cv::KeyPoint>, std::vector<cv::DMatch>>
   calc_warp_corners_and_matches(const cv::Mat& ref_points, const cv::Mat& dst_points, const cv::Mat& image1);
 
-  DetectionResult detect_and_compute(cv::Mat image, int top_k = 4096, cv::Mat* heatmap = nullptr);
+  DetectionResult detect_and_compute(cv::Mat image,
+                                     int top_k = 4096,
+                                     cv::Mat* heatmap = nullptr,
+                                     cv::Mat* M1 = nullptr,
+                                     cv::Mat* x_prep = nullptr);
 
  private:
   Ort::Env env_;
@@ -91,7 +95,9 @@ class XFeatONNX {
   DetectionResult detect_and_compute(Ort::Session& session,
                                      cv::Mat image,
                                      int top_k = 4096,
-                                     cv::Mat* heatmap = nullptr);
+                                     cv::Mat* heatmap = nullptr,
+                                     cv::Mat* M1 = nullptr,
+                                     cv::Mat* x_prep = nullptr);
 
   std::tuple<std::vector<int>, std::vector<int>> match_mkpts_bf(const cv::Mat& feats1,
                                                                 const cv::Mat& feats2,

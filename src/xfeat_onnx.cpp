@@ -248,8 +248,16 @@ cv::Mat XFeatONNX::nms(const cv::Mat& heatmap, float threshold, int kernel_size)
   return kpt_mat;
 }
 
-DetectionResult XFeatONNX::detect_and_compute(Ort::Session& session, cv::Mat image, int top_k, cv::Mat* heatmap) {
+DetectionResult XFeatONNX::detect_and_compute(Ort::Session& session,
+                                              cv::Mat image,
+                                              int top_k,
+                                              cv::Mat* heatmap,
+                                              cv::Mat* M1,
+                                              cv::Mat* x_prep) {
   auto [input_tensor, resize_rate_w, resize_rate_h] = preprocess_image(image);
+  if (x_prep) {
+    *x_prep = input_tensor.clone();  // Copy preprocessed image
+  }
 
   auto input_node_names = session.GetInputNames();
   auto output_node_names = session.GetOutputNames();
@@ -296,17 +304,29 @@ DetectionResult XFeatONNX::detect_and_compute(Ort::Session& session, cv::Mat ima
   int C = M1_shape_vec[1];
   int H = M1_shape_vec[2];
   int W = M1_shape_vec[3];
-  cv::Mat M1(C, H * W, CV_32F, (void*)M1_data);  // (C, H*W)
+  std::cout << "M1 shape: " << B << ", " << C << ", " << H << ", " << W << std::endl;
+
+  if (M1) {
+    // Ensure B == 1
+    assert(B == 1 && "Only batch size 1 is supported");
+    // Create a 3D OpenCV Mat with shape C x H x W
+    int sizes[] = {B, static_cast<int>(C), static_cast<int>(H), static_cast<int>(W)};
+    *M1 = cv::Mat(4, sizes, CV_32F, const_cast<float*>(M1_data));  // Wrap in Mat without copying
+
+    std::cout << "M1 shape: " << M1->size << ", type: " << M1->type() << std::endl;
+  }
+
+  cv::Mat _M1(C, H * W, CV_32F, (void*)M1_data);  // (C, H*W)
   for (int i = 0; i < H * W; ++i) {
     float norm = 0.0f;
-    for (int c = 0; c < C; ++c) norm += M1.at<float>(c, i) * M1.at<float>(c, i);
+    for (int c = 0; c < C; ++c) norm += _M1.at<float>(c, i) * _M1.at<float>(c, i);
     norm = std::sqrt(norm) + 1e-8f;
-    for (int c = 0; c < C; ++c) M1.at<float>(c, i) /= norm;
+    for (int c = 0; c < C; ++c) _M1.at<float>(c, i) /= norm;
   }
   // Reshape back to (C, H, W)
   std::vector<cv::Mat> M1_channels;
   for (int c = 0; c < C; ++c) {
-    M1_channels.push_back(cv::Mat(H, W, CV_32F, M1.ptr<float>(c)));
+    M1_channels.push_back(cv::Mat(H, W, CV_32F, _M1.ptr<float>(c)));
   }
   cv::Mat M1_normed;
   cv::merge(M1_channels, M1_normed);  // (H, W, C)
@@ -655,8 +675,12 @@ XFeatONNX::calc_warp_corners_and_matches(const cv::Mat& ref_points, const cv::Ma
   return {keypoints1, keypoints2, matches};
 }
 
-DetectionResult XFeatONNX::detect_and_compute(cv::Mat image, int top_k, cv::Mat* heatmap) {
-  return detect_and_compute(xfeat_session_, image, top_k, heatmap);
+DetectionResult XFeatONNX::detect_and_compute(cv::Mat image,
+                                              int top_k,
+                                              cv::Mat* heatmap,
+                                              cv::Mat* M1,
+                                              cv::Mat* x_prep) {
+  return detect_and_compute(xfeat_session_, image, top_k, heatmap, M1, x_prep);
 }
 
 std::tuple<std::vector<int>, std::vector<int>> XFeatONNX::match_mkpts_flann(const cv::Mat& feats1,

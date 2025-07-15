@@ -24,6 +24,20 @@ class XFeatCV : public cv::Feature2D {
                         CV_OUT std::vector<KeyPoint>& keypoints,
                         OutputArray descriptors,
                         bool useProvidedKeypoints = false) CV_OVERRIDE {
+    return detectAndCompute(image, mask, keypoints, descriptors, useProvidedKeypoints, nullptr, nullptr);
+  }
+
+  /** Detects keypoints and computes the descriptors */
+  void detectAndCompute(InputArray image,
+                        InputArray mask,
+                        CV_OUT std::vector<KeyPoint>& keypoints,
+                        OutputArray descriptors,
+                        bool useProvidedKeypoints,
+                        cv::Mat* M1,
+                        cv::Mat* x_prep) {
+    // not implemented
+    CV_Assert(!useProvidedKeypoints);
+
     if (not descriptors.empty()) {
       CV_Error(Error::StsBadArg, "Output descriptors must be empty.");
     }
@@ -36,7 +50,7 @@ class XFeatCV : public cv::Feature2D {
     keypoints.clear();
     // Call the XFeatONNX method to detect and compute keypoints and descriptors
 
-    auto result = xfeat_onnx_.detect_and_compute(image.getMat(), params_.max_features, nullptr);
+    auto result = xfeat_onnx_.detect_and_compute(image.getMat(), params_.max_features, nullptr, M1, x_prep);
     for (int i = 0; i < result.keypoints.rows; i++) {
       KeyPoint kp;
       kp.pt = Point2f(result.keypoints.at<float>(i, 0), result.keypoints.at<float>(i, 1));

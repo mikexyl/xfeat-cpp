@@ -14,7 +14,9 @@ find_package(TBB REQUIRED)
 add_library(${PROJECT_NAME} SHARED
     src/xfeat_onnx.cpp
     src/lighterglue_onnx.cpp
-    src/xfeat_cv.cpp)
+    src/xfeat_cv.cpp
+    src/xfeat_netvlad_onnx.cpp
+    src/netvlad_onnx.cpp)
 
 target_link_libraries(${PROJECT_NAME}
     PUBLIC
