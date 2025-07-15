@@ -5,12 +5,15 @@
 
 namespace xfeat {
 
-HeadNetVLADONNX::HeadNetVLADONNX(Ort::Env& env, const std::string& model_path)
-    : session_options_() {
+HeadNetVLADONNX::HeadNetVLADONNX(Ort::Env& env, const std::string& model_path, bool use_gpu)
+    : session_options_(), session_(nullptr) {
   session_options_.SetIntraOpNumThreads(1);
   session_options_.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_EXTENDED);
-  // Construct session_ as a unique_ptr
-  session_ = std::make_unique<Ort::Session>(env, model_path.c_str(), session_options_);
+  if (use_gpu) {
+    OrtCUDAProviderOptions cuda_options{};
+    session_options_.AppendExecutionProvider_CUDA(cuda_options);
+  }
+  session_ = Ort::Session(env, model_path.c_str(), session_options_);
 
   // Set input/output names
   input_names_ = {"input", "input.1"};
@@ -33,13 +36,14 @@ cv::Mat HeadNetVLADONNX::run(const cv::Mat& M1, const cv::Mat& x_prep) {
   }
 
   // Prepare input shapes
-  std::vector<int64_t> input_shape = {M1_reshaped.size[0], M1_reshaped.size[1], M1_reshaped.size[2], M1_reshaped.size[3]};
+  std::vector<int64_t> input_shape = {
+      M1_reshaped.size[0], M1_reshaped.size[1], M1_reshaped.size[2], M1_reshaped.size[3]};
   std::vector<int64_t> input1_shape = {x_prep.size[0], x_prep.size[1], x_prep.size[2], x_prep.size[3]};
 
   // Create Ort tensors
   Ort::MemoryInfo mem_info = Ort::MemoryInfo::CreateCpu(OrtDeviceAllocator, OrtMemTypeCPU);
-  Ort::Value input_tensor =
-      Ort::Value::CreateTensor<float>(mem_info, (float*)M1_reshaped.data, M1_reshaped.total(), input_shape.data(), input_shape.size());
+  Ort::Value input_tensor = Ort::Value::CreateTensor<float>(
+      mem_info, (float*)M1_reshaped.data, M1_reshaped.total(), input_shape.data(), input_shape.size());
   Ort::Value input1_tensor = Ort::Value::CreateTensor<float>(
       mem_info, (float*)x_prep.data, x_prep.total(), input1_shape.data(), input1_shape.size());
 
@@ -48,7 +52,7 @@ cv::Mat HeadNetVLADONNX::run(const cv::Mat& M1, const cv::Mat& x_prep) {
   ort_inputs.push_back(std::move(input1_tensor));
 
   // Run inference
-  auto output_tensors = session_->Run(
+  auto output_tensors = session_.Run(
       Ort::RunOptions{nullptr}, input_names_.data(), ort_inputs.data(), ort_inputs.size(), output_names_.data(), 1);
 
   // Get output tensor

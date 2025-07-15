@@ -1,5 +1,8 @@
 #include <faiss/IndexFlat.h>
+#include <faiss/IndexIVFAdditiveQuantizer.h>
 #include <faiss/IndexIVFFlat.h>
+#include <faiss/IndexIVFPQ.h>
+#include <faiss/gpu/GpuIndexIVFScalarQuantizer.h>
 #include <faiss/index_io.h>
 
 #include <fstream>
@@ -27,10 +30,13 @@ int main(int argc, char* argv[]) {
   ifs.read(reinterpret_cast<char*>(faiss_db.data()), nb * dim * sizeof(float));
   ifs.close();
 
-  // Faiss CPU setup
   int nlist = 128;  // number of clusters
+  int m = 16;       // number of subquantizers
+  int nbits = 8;    // bits per subquantizer (typical: 8)
+
   faiss::IndexFlatL2 quantizer(dim);
-  faiss::IndexIVFFlat index(&quantizer, dim, nlist);
+
+  faiss::IndexIVFPQ index(&quantizer, dim, nlist, m, nbits);
 
   // Train the index
   index.train(nb, faiss_db.data());

@@ -9,7 +9,7 @@
 namespace xfeat {
 class NetVLADONNX {
  public:
-  NetVLADONNX(Ort::Env& env, const std::string& model_path);
+  NetVLADONNX(Ort::Env& env, const std::string& model_path, bool use_gpu = true);
   // input: [batch_size, 256, 30, 40], output: [batch_size, output_dim]
   std::vector<std::vector<float>> infer(const std::vector<float>& input, size_t batch_size);
   // Optional: OpenCV Mat interface

@@ -1,7 +1,9 @@
 // filepath: examples/batch_match_example.cpp
 #include <faiss/IndexFlat.h>
+#include <faiss/gpu/GpuCloner.h>
 #include <faiss/gpu/GpuIndexFlat.h>
 #include <faiss/gpu/StandardGpuResources.h>
+#include <faiss/index_io.h>
 #include <onnxruntime/core/session/onnxruntime_cxx_api.h>
 
 #include <algorithm>
@@ -158,23 +160,26 @@ int main(int argc, char* argv[]) {
   }
   std::vector<float> vlad_query_vec = vlad_query[0];
 
-  // Faiss GPU setup
-  faiss::gpu::StandardGpuResources res;
-  int dim = vlad_query_vec.size();
-  faiss::gpu::GpuIndexFlatL2 index(&res, dim);
-
-  // Add all target descriptors to Faiss index
-  std::vector<float> faiss_db;
-  for (const auto& desc : vlad_targets) {
-    faiss_db.insert(faiss_db.end(), desc.begin(), desc.end());
+  // Faiss GPU setup with IVF-Flat index loaded from disk
+  std::filesystem::path faiss_index_path = xfeat_model_folder / "faiss_ivfpq.index";
+  faiss::Index* cpu_index = nullptr;
+  try {
+    cpu_index = faiss::read_index(faiss_index_path.string().c_str());
+  } catch (const std::exception& e) {
+    std::cerr << "Failed to load Faiss index: " << e.what() << std::endl;
+    return 1;
   }
-  index.add(sample_paths.size(), faiss_db.data());
+  faiss::gpu::StandardGpuResources res;
+  int gpu_id = 0;
+  faiss::gpu::GpuClonerOptions opts;
+  opts.useFloat16 = false;
+  faiss::Index* gpu_index = faiss::gpu::index_cpu_to_gpu(&res, gpu_id, cpu_index, &opts);
 
   // Search for the closest match
   int k = 1;
   std::vector<faiss::idx_t> faiss_labels(k);
   std::vector<float> faiss_distances(k);
-  index.search(1, vlad_query_vec.data(), k, faiss_distances.data(), faiss_labels.data());
+  gpu_index->search(1, vlad_query_vec.data(), k, faiss_distances.data(), faiss_labels.data());
   best_idx = faiss_labels[0];
   best_score = faiss_distances[0];
 
@@ -226,8 +231,11 @@ int main(int argc, char* argv[]) {
     int row = (idx / grid_cols) + 1;
     int col = idx % grid_cols;
     thumb.copyTo(grid_img(cv::Rect(col * thumb_w, row * thumb_h, thumb_w, thumb_h)));
+    // Highlight best match in green, other matches in yellow
     if (idx == best_idx) {
       cv::rectangle(grid_img, cv::Rect(col * thumb_w, row * thumb_h, thumb_w, thumb_h), cv::Scalar(0, 255, 0), 3);
+    } else if (vlad_scores[idx] >= min_score) {
+      cv::rectangle(grid_img, cv::Rect(col * thumb_w, row * thumb_h, thumb_w, thumb_h), cv::Scalar(0, 255, 255), 2);
     }
   }
   cv::imshow("Query + Sampled Images Grid", grid_img);
