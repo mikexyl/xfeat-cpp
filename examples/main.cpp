@@ -14,6 +14,8 @@
 
 using namespace xfeat;
 
+static constexpr bool kDrawHeatmap = true;
+
 int main(int argc, char* argv[]) {
   std::filesystem::path image_folder((argc > 1) ? argv[1] : "image");
   std::filesystem::path image1_path = image_folder / "sample1.png";
@@ -107,7 +109,7 @@ int main(int argc, char* argv[]) {
                       cv::DrawMatchesFlags::NOT_DRAW_SINGLE_POINTS);
 
       // draw the heatmap
-      if (!heatmap1.empty() && !heatmap2.empty()) {
+      if (!heatmap1.empty() and !heatmap2.empty() and kDrawHeatmap) {
         cv::Mat heatmap1_colored, heatmap2_colored;
         cv::Mat heatmap1_u8, heatmap2_u8, heatmap1_norm, heatmap2_norm;
         // Normalize heatmaps to 0-255 range
