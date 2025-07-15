@@ -12,15 +12,15 @@
 
 using namespace xfeat;
 
-XFeatONNX::XFeatONNX(const std::string& xfeat_path,
+XFeatONNX::XFeatONNX(Ort::Env& env,
+                     const std::string& xfeat_path,
                      const std::string& interp_bilinear_path,
                      const std::string& interp_bicubic_path,
                      const std::string& interp_nearest_path,
                      bool use_gpu,
                      MatcherType matcher_type,
                      std::unique_ptr<LighterGlueOnnx> lighterglue)
-    : env_(ORT_LOGGING_LEVEL_WARNING, "XFeatONNX"),
-      xfeat_session_(nullptr),
+    : xfeat_session_(nullptr),
       interp_bilinear_session_(nullptr),
       interp_bicubic_session_(nullptr),
       interp_nearest_session_(nullptr),
@@ -49,10 +49,10 @@ XFeatONNX::XFeatONNX(const std::string& xfeat_path,
     session_options_.AppendExecutionProvider_CUDA(cuda_options);
   }
 
-  xfeat_session_ = Ort::Session(env_, xfeat_path.c_str(), session_options_);
-  interp_bilinear_session_ = Ort::Session(env_, interp_bilinear_path.c_str(), session_options_);
-  interp_bicubic_session_ = Ort::Session(env_, interp_bicubic_path.c_str(), session_options_);
-  interp_nearest_session_ = Ort::Session(env_, interp_nearest_path.c_str(), session_options_);
+  xfeat_session_ = Ort::Session(env, xfeat_path.c_str(), session_options_);
+  interp_bilinear_session_ = Ort::Session(env, interp_bilinear_path.c_str(), session_options_);
+  interp_bicubic_session_ = Ort::Session(env, interp_bicubic_path.c_str(), session_options_);
+  interp_nearest_session_ = Ort::Session(env, interp_nearest_path.c_str(), session_options_);
 
   // Get input dimensions from the xfeat model
   auto input_node_names = xfeat_session_.GetInputNames();
@@ -304,7 +304,6 @@ DetectionResult XFeatONNX::detect_and_compute(Ort::Session& session,
   int C = M1_shape_vec[1];
   int H = M1_shape_vec[2];
   int W = M1_shape_vec[3];
-  std::cout << "M1 shape: " << B << ", " << C << ", " << H << ", " << W << std::endl;
 
   if (M1) {
     // Ensure B == 1
@@ -312,8 +311,6 @@ DetectionResult XFeatONNX::detect_and_compute(Ort::Session& session,
     // Create a 3D OpenCV Mat with shape C x H x W
     int sizes[] = {B, static_cast<int>(C), static_cast<int>(H), static_cast<int>(W)};
     *M1 = cv::Mat(4, sizes, CV_32F, const_cast<float*>(M1_data));  // Wrap in Mat without copying
-
-    std::cout << "M1 shape: " << M1->size << ", type: " << M1->type() << std::endl;
   }
 
   cv::Mat _M1(C, H * W, CV_32F, (void*)M1_data);  // (C, H*W)
@@ -727,3 +724,13 @@ std::tuple<std::vector<int>, std::vector<int>> XFeatONNX::match_mkpts_flann(cons
   }
   return {idx0, idx1};
 }
+
+XFeatONNX::XFeatONNX(Ort::Env& env, const Params& params, std::unique_ptr<LighterGlueOnnx> lighterglue)
+    : XFeatONNX(env,
+                params.xfeat_path,
+                params.interp_bilinear_path,
+                params.interp_bicubic_path,
+                params.interp_nearest_path,
+                params.use_gpu,
+                params.matcher_type,
+                std::move(lighterglue)) {}

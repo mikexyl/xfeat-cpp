@@ -5,12 +5,12 @@
 
 namespace xfeat {
 
-HeadNetVLADONNX::HeadNetVLADONNX(const std::string& model_path)
-    : env_(ORT_LOGGING_LEVEL_WARNING, "xfeat_netvlad"), session_options_() {
+HeadNetVLADONNX::HeadNetVLADONNX(Ort::Env& env, const std::string& model_path)
+    : session_options_() {
   session_options_.SetIntraOpNumThreads(1);
   session_options_.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_EXTENDED);
   // Construct session_ as a unique_ptr
-  session_ = std::make_unique<Ort::Session>(env_, model_path.c_str(), session_options_);
+  session_ = std::make_unique<Ort::Session>(env, model_path.c_str(), session_options_);
 
   // Set input/output names
   input_names_ = {"input", "input.1"};
@@ -54,12 +54,6 @@ cv::Mat HeadNetVLADONNX::run(const cv::Mat& M1, const cv::Mat& x_prep) {
   // Get output tensor
   float* output_data = output_tensors[0].GetTensorMutableData<float>();
   auto output_shape = output_tensors[0].GetTensorTypeAndShapeInfo().GetShape();
-
-  std::cout << "ONNX output shape: ";
-  for (size_t i = 0; i < output_shape.size(); ++i) {
-    std::cout << output_shape[i] << " ";
-  }
-  std::cout << std::endl;
 
   if (output_shape.size() == 0 || output_data == nullptr) {
     std::cerr << "ONNX output is empty or invalid!" << std::endl;

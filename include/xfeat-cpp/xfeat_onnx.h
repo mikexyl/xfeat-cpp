@@ -24,16 +24,9 @@ class XFeatONNX {
     MatcherType matcher_type = MatcherType::FLANN;  // Default to BFMatcher
   };
 
-  XFeatONNX(const Params& params, std::unique_ptr<LighterGlueOnnx> lighterglue = nullptr)
-      : XFeatONNX(params.xfeat_path,
-                  params.interp_bilinear_path,
-                  params.interp_bicubic_path,
-                  params.interp_nearest_path,
-                  params.use_gpu,
-                  params.matcher_type,
-                  std::move(lighterglue)) {}
-
-  XFeatONNX(const std::string& xfeat_path,
+  XFeatONNX(Ort::Env& env, const Params& params, std::unique_ptr<LighterGlueOnnx> lighterglue = nullptr);
+  XFeatONNX(Ort::Env& env,
+            const std::string& xfeat_path,
             const std::string& interp_bilinear_path,
             const std::string& interp_bicubic_path,
             const std::string& interp_nearest_path,
@@ -66,7 +59,6 @@ class XFeatONNX {
                                      cv::Mat* x_prep = nullptr);
 
  private:
-  Ort::Env env_;
   Ort::SessionOptions session_options_;
   Ort::Session xfeat_session_;
   Ort::Session interp_bilinear_session_;

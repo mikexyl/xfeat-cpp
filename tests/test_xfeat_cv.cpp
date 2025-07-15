@@ -22,6 +22,7 @@ class XFeatFullTestFixture : public ::testing::Test {
   std::unique_ptr<xfeat::NetVLADONNX> netvlad;
   cv::Mat img_gray;
   cv::Mat img_color;
+  std::shared_ptr<Ort::Env> env;
   void SetUp() override {
     XFeatCV::Params params;
     params.xfeat_path = "/workspaces/src/xfeat-cpp/onnx_model/xfeat_640x480.onnx";
@@ -30,9 +31,10 @@ class XFeatFullTestFixture : public ::testing::Test {
     params.interp_nearest_path = "/workspaces/src/xfeat-cpp/onnx_model/interpolator_nearest_640x480.onnx";
     params.use_gpu = true;
     params.max_features = 500;
-    xfeat = XFeatCV::create(params);
-    head_netvlad = std::make_unique<xfeat::HeadNetVLADONNX>("/workspaces/src/xfeat-cpp/onnx_model/xfeat_nv.onnx");
-    netvlad = std::make_unique<xfeat::NetVLADONNX>("/workspaces/src/xfeat-cpp/onnx_model/netvlad.onnx");
+    env = std::make_shared<Ort::Env>(ORT_LOGGING_LEVEL_WARNING, "xfeat-shared-env");
+    xfeat = XFeatCV::create(*env, params);
+    head_netvlad = std::make_unique<xfeat::HeadNetVLADONNX>(*env, "/workspaces/src/xfeat-cpp/onnx_model/xfeat_nv.onnx");
+    netvlad = std::make_unique<xfeat::NetVLADONNX>(*env, "/workspaces/src/xfeat-cpp/onnx_model/netvlad.onnx");
     img_gray = imread(getTestImagePath("sample1.png"), IMREAD_GRAYSCALE);
     img_color = imread(getTestImagePath("sample2.png"), IMREAD_COLOR);
   }

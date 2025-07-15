@@ -50,17 +50,18 @@ int main(int argc, char* argv[]) {
   }
 
   try {
-    auto lighterglue_model = std::make_unique<LighterGlueOnnx>(lighterglue_model_path.string(), true);
-    XFeatONNX xfeat_onnx(
-        XFeatONNX::Params{
-            .xfeat_path = xfeat_model_path.string(),
-            .interp_bilinear_path = interp_bilinear_path.string(),
-            .interp_bicubic_path = interp_bicubic_path.string(),
-            .interp_nearest_path = interp_nearest_path.string(),
-            .use_gpu = true,
-            .matcher_type = matcher_type,
-        },
-        std::move(lighterglue_model));
+    Ort::Env env(ORT_LOGGING_LEVEL_WARNING, "xfeat-shared-env");
+    auto lighterglue_model = std::make_unique<LighterGlueOnnx>(env, lighterglue_model_path.string(), true);
+    XFeatONNX xfeat_onnx(env,
+                         XFeatONNX::Params{
+                             .xfeat_path = xfeat_model_path.string(),
+                             .interp_bilinear_path = interp_bilinear_path.string(),
+                             .interp_bicubic_path = interp_bicubic_path.string(),
+                             .interp_nearest_path = interp_nearest_path.string(),
+                             .use_gpu = true,
+                             .matcher_type = matcher_type,
+                         },
+                         std::move(lighterglue_model));
 
     xfeat_onnx.match(image1, image2, max_kpts);
 

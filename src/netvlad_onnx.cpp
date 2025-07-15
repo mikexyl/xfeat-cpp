@@ -4,10 +4,9 @@
 #include <memory>
 
 namespace xfeat {
-NetVLADONNX::NetVLADONNX(const std::string& model_path)
-    : env_(ORT_LOGGING_LEVEL_WARNING, "netvlad"),
-      session_options_(),
-      session_(env_, model_path.c_str(), session_options_) {}
+NetVLADONNX::NetVLADONNX(Ort::Env& env, const std::string& model_path)
+    : session_options_(),
+      session_(env, model_path.c_str(), session_options_) {}
 
 std::vector<std::vector<float>> NetVLADONNX::infer(const std::vector<float>& input, size_t batch_size) {
   std::vector<int64_t> input_shape = {static_cast<int64_t>(batch_size), 256, 30, 40};

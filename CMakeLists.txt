@@ -10,6 +10,7 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
 find_package(OpenCV REQUIRED)
 find_package(onnxruntime REQUIRED)
 find_package(TBB REQUIRED)
+find_package(faiss REQUIRED)
 
 add_library(${PROJECT_NAME} SHARED
     src/xfeat_onnx.cpp
@@ -24,7 +25,11 @@ target_link_libraries(${PROJECT_NAME}
     ${onnxruntime_LIBRARY}
     TBB::tbb
     TBB::tbbmalloc
+    faiss
 )
+
+option(CUBLAS_DIR "Path to CUBLAS installation")
+message(STATUS "CUBLAS_DIR: ${CUBLAS_DIR}")
 
 target_include_directories(${PROJECT_NAME}
     PUBLIC
@@ -32,9 +37,12 @@ target_include_directories(${PROJECT_NAME}
     $<INSTALL_INTERFACE:include>
     ${onnxruntime_INCLUDE_DIR}
     ${OpenCV_INCLUDE_DIRS}
+    $<TARGET_PROPERTY:faiss,INTERFACE_INCLUDE_DIRECTORIES>
+    ${CUBLAS_DIR}/include
 )
 
 add_subdirectory(examples)
+add_subdirectory(scripts)
 add_subdirectory(tests)
 
 include(CMakePackageConfigHelpers)

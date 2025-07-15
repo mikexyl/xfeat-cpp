@@ -13,10 +13,10 @@ class XFeatCV : public cv::Feature2D {
     int max_features;  // Default maximum number of features to detect
   };
 
-  XFeatCV(const Params& params = Params()) : Feature2D(), xfeat_onnx_(params), params_(params) {}
+  XFeatCV(Ort::Env& env, const Params& params = Params()) : Feature2D(), env_(env), xfeat_onnx_(env, params), params_(params) {}
 
   // Factory method to create an instance of XFeatCV
-  static cv::Ptr<XFeatCV> create(const Params& params) { return Ptr<XFeatCV>(new XFeatCV(params)); }
+  static cv::Ptr<XFeatCV> create(Ort::Env& env, const Params& params) { return Ptr<XFeatCV>(new XFeatCV(env, params)); }
 
   /** Detects keypoints and computes the descriptors */
   void detectAndCompute(InputArray image,
@@ -99,6 +99,7 @@ class XFeatCV : public cv::Feature2D {
   String getDefaultName() const CV_OVERRIDE { return "XFeat"; }
 
  private:
+  Ort::Env& env_;
   Params params_;  // Parameters for XFeatCV
 
   XFeatONNX xfeat_onnx_;

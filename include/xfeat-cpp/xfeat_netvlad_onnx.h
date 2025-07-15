@@ -9,14 +9,13 @@ namespace xfeat {
 
 class HeadNetVLADONNX {
  public:
-  HeadNetVLADONNX(const std::string& model_path);
+  HeadNetVLADONNX(Ort::Env& env, const std::string& model_path);
 
   // Run inference: input and input1 are cv::Mat (float32)
   // Returns output as cv::Mat (float32)
   cv::Mat run(const cv::Mat& M1, const cv::Mat& x_prep);
 
  private:
-  Ort::Env env_;
   std::unique_ptr<Ort::Session> session_;
   Ort::SessionOptions session_options_;
   std::vector<const char*> input_names_;

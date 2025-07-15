@@ -1,7 +1,11 @@
 // filepath: examples/batch_match_example.cpp
+#include <faiss/IndexFlat.h>
+#include <faiss/gpu/GpuIndexFlat.h>
+#include <faiss/gpu/StandardGpuResources.h>
 #include <onnxruntime/core/session/onnxruntime_cxx_api.h>
 
 #include <algorithm>
+#include <chrono>
 #include <filesystem>
 #include <iostream>
 #include <opencv2/opencv.hpp>
@@ -9,7 +13,6 @@
 #include <string>
 #include <vector>
 
-#include "xfeat-cpp/helpers.h"
 #include "xfeat-cpp/netvlad_onnx.h"
 #include "xfeat-cpp/xfeat_netvlad_onnx.h"
 #include "xfeat-cpp/xfeat_onnx.h"
@@ -59,27 +62,39 @@ int main(int argc, char* argv[]) {
   std::shuffle(image_paths.begin(), image_paths.end(), g);
   image_paths.resize(num_images);
 
-  // Load models
-  auto lighterglue_model = std::make_unique<LighterGlueOnnx>(lighterglue_model_path.string(), true);
-  XFeatONNX xfeat_onnx(
-      XFeatONNX::Params{
-          .xfeat_path = xfeat_model_path.string(),
-          .interp_bilinear_path = interp_bilinear_path.string(),
-          .interp_bicubic_path = interp_bicubic_path.string(),
-          .interp_nearest_path = interp_nearest_path.string(),
-          .use_gpu = true,
-          .matcher_type = MatcherType::LIGHTERGLUE,
-      },
-      std::move(lighterglue_model));
+  // Create a single ONNX Runtime environment
+  Ort::Env env(ORT_LOGGING_LEVEL_WARNING, "xfeat-shared-env");
 
-  xfeat::NetVLADONNX netvlad_onnx(netvlad_model_path.string());
-  xfeat::HeadNetVLADONNX head_netvlad_onnx(xfeat_model_folder / ("xfeat_nv.onnx"));
+  // Load models
+  auto lighterglue_model = std::make_unique<LighterGlueOnnx>(env, lighterglue_model_path.string(), true);
+  XFeatONNX xfeat_onnx(env,
+                       XFeatONNX::Params{
+                           .xfeat_path = xfeat_model_path.string(),
+                           .interp_bilinear_path = interp_bilinear_path.string(),
+                           .interp_bicubic_path = interp_bicubic_path.string(),
+                           .interp_nearest_path = interp_nearest_path.string(),
+                           .use_gpu = true,
+                           .matcher_type = MatcherType::LIGHTERGLUE,
+                       },
+                       std::move(lighterglue_model));
+
+  std::cout << netvlad_model_path.string() << std::endl;
+  xfeat::NetVLADONNX netvlad_onnx(env, netvlad_model_path.string());
+  xfeat::HeadNetVLADONNX head_netvlad_onnx(env, (xfeat_model_folder / ("xfeat_nv.onnx")).string());
 
   auto extract_netvlad_desc = [&](const cv::Mat& img) {
     cv::Mat M1, x_prep;
+    auto start = std::chrono::high_resolution_clock::now();
     xfeat_onnx.detect_and_compute(img, max_kpts, nullptr, &M1, &x_prep);
+    auto t1 = std::chrono::high_resolution_clock::now();
     cv::Mat dense_desc = head_netvlad_onnx.run(M1, x_prep);
-    return netvlad_onnx.infer(dense_desc);
+    auto t2 = std::chrono::high_resolution_clock::now();
+    auto result = netvlad_onnx.infer(dense_desc);
+    auto end = std::chrono::high_resolution_clock::now();
+    std::cout << "detect_and_compute: " << std::chrono::duration<double, std::milli>(t1 - start).count() << " ms\n";
+    std::cout << "head_netvlad_onnx.run: " << std::chrono::duration<double, std::milli>(t2 - t1).count() << " ms\n";
+    std::cout << "netvlad_onnx.infer: " << std::chrono::duration<double, std::milli>(end - t2).count() << " ms\n";
+    return result;
   };
 
   // Pick query image separately from the folder (not from the samples)
@@ -122,11 +137,15 @@ int main(int argc, char* argv[]) {
     std::cout << "  " << p.filename() << std::endl;
   }
 
-  // Match query image with all samples using NetVLAD + brute-force
+  // Match query image with all samples using NetVLAD + Faiss GPU
   std::vector<float> vlad_scores(sample_paths.size(), 0.0f);
   int best_idx = -1;
   float best_score = std::numeric_limits<float>::max();
   const float min_score = 0.3f;
+
+  // Prepare VLAD descriptors for Faiss
+  std::vector<std::vector<float>> vlad_targets(sample_paths.size());
+  int vlad_dim = -1;
   for (size_t j = 0; j < sample_paths.size(); ++j) {
     cv::Mat target_img = cv::imread(sample_paths[j], cv::IMREAD_GRAYSCALE);
     if (target_img.empty()) {
@@ -134,16 +153,51 @@ int main(int argc, char* argv[]) {
       continue;
     }
     auto vlad_target = extract_netvlad_desc(target_img);
-    float vlad_score = cv::norm(cv::Mat(vlad_query[0]), cv::Mat(vlad_target[0]), cv::NORM_L2);
-    vlad_scores[j] = vlad_score;
-    if (vlad_score < best_score) {
-      best_score = vlad_score;
-      best_idx = j;
+    if (vlad_dim < 0) vlad_dim = vlad_target[0].size();
+    vlad_targets[j] = vlad_target[0];
+  }
+  std::vector<float> vlad_query_vec = vlad_query[0];
+
+  // Faiss GPU setup
+  faiss::gpu::StandardGpuResources res;
+  int dim = vlad_query_vec.size();
+  faiss::gpu::GpuIndexFlatL2 index(&res, dim);
+
+  // Add all target descriptors to Faiss index
+  std::vector<float> faiss_db;
+  for (const auto& desc : vlad_targets) {
+    faiss_db.insert(faiss_db.end(), desc.begin(), desc.end());
+  }
+  index.add(sample_paths.size(), faiss_db.data());
+
+  // Search for the closest match
+  int k = 1;
+  std::vector<faiss::idx_t> faiss_labels(k);
+  std::vector<float> faiss_distances(k);
+  index.search(1, vlad_query_vec.data(), k, faiss_distances.data(), faiss_labels.data());
+  best_idx = faiss_labels[0];
+  best_score = faiss_distances[0];
+
+  // Helper for L2 norm
+  auto l2_norm = [](const std::vector<float>& a, const std::vector<float>& b) {
+    float sum = 0.0f;
+    for (size_t i = 0; i < a.size(); ++i) {
+      float diff = a[i] - b[i];
+      sum += diff * diff;
     }
+    return std::sqrt(sum);
+  };
+
+  // Print results using Faiss scores
+  for (size_t j = 0; j < sample_paths.size(); ++j) {
+    float vlad_score = l2_norm(vlad_query_vec, vlad_targets[j]);
+    vlad_scores[j] = vlad_score;
     if (vlad_score >= min_score) {
-      std::cout << "MATCH: NetVLAD L2 distance (query <-> " << sample_paths[j].filename() << "): " << vlad_score << std::endl;
+      std::cout << "MATCH: NetVLAD L2 distance (query <-> " << sample_paths[j].filename() << "): " << vlad_score
+                << std::endl;
     } else {
-      std::cout << "NO MATCH: NetVLAD L2 distance (query <-> " << sample_paths[j].filename() << "): " << vlad_score << std::endl;
+      std::cout << "NO MATCH: NetVLAD L2 distance (query <-> " << sample_paths[j].filename() << "): " << vlad_score
+                << std::endl;
     }
   }
 

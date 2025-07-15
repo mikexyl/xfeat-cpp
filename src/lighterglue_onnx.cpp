@@ -8,9 +8,8 @@
 
 namespace xfeat {
 
-LighterGlueOnnx::LighterGlueOnnx(const std::string& model_path, bool use_gpu)
-    : env_(ORT_LOGGING_LEVEL_WARNING, "LighterGlue"),
-      session_options_(),
+LighterGlueOnnx::LighterGlueOnnx(Ort::Env& env, const std::string& model_path, bool use_gpu)
+    : session_options_(),
       session_(nullptr),
       input_names_(),
       output_names_() {
@@ -38,7 +37,7 @@ LighterGlueOnnx::LighterGlueOnnx(const std::string& model_path, bool use_gpu)
     session_options_.AppendExecutionProvider_CUDA(cuda_options);
   }
 
-  session_ = Ort::Session(env_, model_path.c_str(), session_options_);
+  session_ = Ort::Session(env, model_path.c_str(), session_options_);
   input_names_ = {"mkpts0", "feats0", "image0_size", "mkpts1", "feats1", "image1_size"};
   output_names_ = {"matches", "scores"};
 }
