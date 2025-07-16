@@ -70,7 +70,7 @@ int main(int argc, char* argv[]) {
     cv::Mat heatmap1, heatmap2;
     auto result1 = xfeat_onnx.detect_and_compute(image1, max_kpts, &heatmap1);
     auto result2 = xfeat_onnx.detect_and_compute(image2, max_kpts, &heatmap2);
-    auto [mkpts0, mkpts1, kpts1, kpts2] = xfeat_onnx.match(result1, result2, image1, max_kpts, min_cos, &timing_stats);
+    auto [mkpts0, mkpts1, kpts1, kpts2] = xfeat_onnx.match(result1, result2, image1, min_cos, &timing_stats);
     auto end = std::chrono::high_resolution_clock::now();
     std::chrono::duration<double, std::milli> duration = end - start;
     std::cout << "xfeat_onnx detection+match+RANSAC on 2 images (size: " << image1.cols << "x" << image1.rows

@@ -565,7 +565,7 @@ std::tuple<cv::Mat, cv::Mat, cv::Mat, cv::Mat> XFeatONNX::match(cv::Mat image1,
             << std::endl;
 
   auto match_start = std::chrono::high_resolution_clock::now();
-  auto match_result = match(result1, result2, image1, top_k, min_cossim, timing_stats);
+  auto match_result = match(result1, result2, image1, min_cossim, timing_stats);
   auto match_end = std::chrono::high_resolution_clock::now();
 
   if (timing_stats) {
@@ -582,7 +582,6 @@ std::tuple<cv::Mat, cv::Mat, cv::Mat, cv::Mat> XFeatONNX::match(cv::Mat image1,
 std::tuple<cv::Mat, cv::Mat, cv::Mat, cv::Mat> XFeatONNX::match(const DetectionResult& result1,
                                                                 const DetectionResult& result2,
                                                                 cv::Mat image1,
-                                                                int top_k,
                                                                 float min_sim,
                                                                 TimingStats* timing_stats) {
   if (result1.keypoints.empty() || result2.keypoints.empty()) {

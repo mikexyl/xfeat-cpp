@@ -45,7 +45,6 @@ class XFeatONNX {
   std::tuple<cv::Mat, cv::Mat, cv::Mat, cv::Mat> match(const DetectionResult& result1,
                                                        const DetectionResult& result2,
                                                        cv::Mat image1,
-                                                       int top_k = 4096,
                                                        float min_cossim = -1.0f,
                                                        TimingStats* timing_stats = nullptr);
 

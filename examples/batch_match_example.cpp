@@ -27,7 +27,7 @@ int main(int argc, char* argv[]) {
   std::filesystem::path image_folder((argc > 1) ? argv[1] : "image");
   const std::string image_resolution = "640x480";
   constexpr int max_kpts = 500;
-  const int num_images = 1000;
+  const int num_images = 4000;
 
   std::filesystem::path xfeat_model_folder = (argc > 2) ? argv[2] : "onnx_model";
   std::filesystem::path xfeat_model_path = xfeat_model_folder / ("xfeat_" + image_resolution + ".onnx");
@@ -53,16 +53,13 @@ int main(int argc, char* argv[]) {
       }
     }
   }
-  if (image_paths.size() < num_images) {
-    std::cerr << "Not enough images in folder!" << std::endl;
-    return 1;
-  }
-
   // Randomly select 20 images
   std::random_device rd;
   std::mt19937 g(rd());
-  std::shuffle(image_paths.begin(), image_paths.end(), g);
-  image_paths.resize(num_images);
+  if (image_paths.size() > num_images) {
+    std::shuffle(image_paths.begin(), image_paths.end(), g);
+    image_paths.resize(num_images);
+  }
 
   // Create a single ONNX Runtime environment
   Ort::Env env(ORT_LOGGING_LEVEL_WARNING, "xfeat-shared-env");
@@ -186,7 +183,7 @@ int main(int argc, char* argv[]) {
   gpu_index->add(n, flat_targets.data());
 
   // === SEARCH TOP-K ===
-  int k = 5;
+  int k = 30;
   std::vector<faiss::idx_t> faiss_labels(k);
   std::vector<float> faiss_distances(k);
 
@@ -206,6 +203,26 @@ int main(int argc, char* argv[]) {
     std::cout << dist << " ";
   }
   std::cout << std::endl;
+
+  // === LighterGlue matching for each matched image ===
+  // Extract DetectionResult for query image
+  auto query_det = xfeat_onnx.detect_and_compute(query_img, max_kpts);
+  std::array<float, 2> query_img_size = {static_cast<float>(query_img.cols), static_cast<float>(query_img.rows)};
+
+  std::vector<int> lighterglue_match_counts(k, 0);
+  for (size_t match_idx = 0; match_idx < faiss_labels.size(); ++match_idx) {
+    faiss::idx_t idx = faiss_labels[match_idx];
+    if (idx < 0 || idx >= static_cast<faiss::idx_t>(sample_paths.size())) continue;
+    cv::Mat match_img_gray = cv::imread(sample_paths[idx], cv::IMREAD_GRAYSCALE);
+    if (match_img_gray.empty()) continue;
+    auto match_det = xfeat_onnx.detect_and_compute(match_img_gray, max_kpts);
+    std::array<float, 2> match_img_size = {static_cast<float>(match_img_gray.cols),
+                                           static_cast<float>(match_img_gray.rows)};
+    auto [idx0, idx1, _, __] = xfeat_onnx.match(query_det, match_det, query_img);
+    lighterglue_match_counts[match_idx] = idx0.rows;
+    std::cout << "LighterGlue matches for Faiss match " << match_idx << " (label " << idx << "): " << idx0.size()
+              << std::endl;
+  }
 
   // Visualize the query and sampled images in one big image grid
   int grid_cols = 5;
@@ -231,12 +248,21 @@ int main(int argc, char* argv[]) {
     if (img.empty()) continue;
     cv::Mat thumb;
     cv::resize(img, thumb, cv::Size(thumb_w, thumb_h));
+    // Draw LighterGlue match count on the thumbnail
+    std::string text = "LG: " + std::to_string(lighterglue_match_counts[match_idx]);
+    int font = cv::FONT_HERSHEY_SIMPLEX;
+    double font_scale = 0.7;
+    int thickness = 2;
+    int baseline = 0;
+    cv::Size text_size = cv::getTextSize(text, font, font_scale, thickness, &baseline);
+    cv::Point text_org(5, thumb_h - 10);
+    cv::putText(thumb, text, text_org, font, font_scale, cv::Scalar(0, 255, 255), thickness, cv::LINE_AA);
     int row = (match_idx / grid_cols) + 1;
     int col = match_idx % grid_cols;
     thumb.copyTo(grid_img(cv::Rect(col * thumb_w, row * thumb_h, thumb_w, thumb_h)));
     cv::rectangle(grid_img, cv::Rect(col * thumb_w, row * thumb_h, thumb_w, thumb_h), cv::Scalar(0, 255, 0), 2);
   }
-  cv::imwrite("query_and_matches_grid.png", grid_img); // Save the grid image to file
+  cv::imwrite("query_and_matches_grid.png", grid_img);  // Save the grid image to file
   cv::imshow("Query + Sampled Images Grid", grid_img);
   cv::waitKey(0);
 
