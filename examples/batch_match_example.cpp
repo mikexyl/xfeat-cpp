@@ -27,7 +27,7 @@ int main(int argc, char* argv[]) {
   std::filesystem::path image_folder((argc > 1) ? argv[1] : "image");
   const std::string image_resolution = "640x480";
   constexpr int max_kpts = 500;
-  const int num_images = 20;
+  const int num_images = 1000;
 
   std::filesystem::path xfeat_model_folder = (argc > 2) ? argv[2] : "onnx_model";
   std::filesystem::path xfeat_model_path = xfeat_model_folder / ("xfeat_" + image_resolution + ".onnx");
@@ -138,16 +138,13 @@ int main(int argc, char* argv[]) {
   for (const auto& p : sample_paths) {
     std::cout << "  " << p.filename() << std::endl;
   }
-
   // Match query image with all samples using NetVLAD + Faiss GPU
-  std::vector<float> vlad_scores(sample_paths.size(), 0.0f);
-  int best_idx = -1;
-  float best_score = std::numeric_limits<float>::max();
   const float min_score = 0.3f;
 
   // Prepare VLAD descriptors for Faiss
   std::vector<std::vector<float>> vlad_targets(sample_paths.size());
   int vlad_dim = -1;
+
   for (size_t j = 0; j < sample_paths.size(); ++j) {
     cv::Mat target_img = cv::imread(sample_paths[j], cv::IMREAD_GRAYSCALE);
     if (target_img.empty()) {
@@ -156,12 +153,13 @@ int main(int argc, char* argv[]) {
     }
     auto vlad_target = extract_netvlad_desc(target_img);
     if (vlad_dim < 0) vlad_dim = vlad_target[0].size();
-    vlad_targets[j] = vlad_target[0];
+    vlad_targets[j] = vlad_target[0];  // Assuming single descriptor per image
   }
+
   std::vector<float> vlad_query_vec = vlad_query[0];
 
-  // Faiss GPU setup with IVF-Flat index loaded from disk
-  std::filesystem::path faiss_index_path = xfeat_model_folder / "faiss_ivfpq.index";
+  // === FAISS index loading and transfer to GPU ===
+  std::filesystem::path faiss_index_path = xfeat_model_folder / "faiss_ivfflat.index.bin";
   faiss::Index* cpu_index = nullptr;
   try {
     cpu_index = faiss::read_index(faiss_index_path.string().c_str());
@@ -169,42 +167,45 @@ int main(int argc, char* argv[]) {
     std::cerr << "Failed to load Faiss index: " << e.what() << std::endl;
     return 1;
   }
+
   faiss::gpu::StandardGpuResources res;
   int gpu_id = 0;
   faiss::gpu::GpuClonerOptions opts;
   opts.useFloat16 = false;
+
   faiss::Index* gpu_index = faiss::gpu::index_cpu_to_gpu(&res, gpu_id, cpu_index, &opts);
 
-  // Search for the closest match
-  int k = 1;
+  // === FLATTEN and ADD VLAD TARGETS TO INDEX ===
+  int n = static_cast<int>(vlad_targets.size());
+  std::vector<float> flat_targets(n * vlad_dim);
+  for (int i = 0; i < n; ++i) {
+    std::copy(vlad_targets[i].begin(), vlad_targets[i].end(), flat_targets.begin() + i * vlad_dim);
+  }
+
+  // You must call add() before search!
+  gpu_index->add(n, flat_targets.data());
+
+  // === SEARCH TOP-K ===
+  int k = 5;
   std::vector<faiss::idx_t> faiss_labels(k);
   std::vector<float> faiss_distances(k);
+
+  // Time the search function
+  auto search_start = std::chrono::high_resolution_clock::now();
   gpu_index->search(1, vlad_query_vec.data(), k, faiss_distances.data(), faiss_labels.data());
-  best_idx = faiss_labels[0];
-  best_score = faiss_distances[0];
+  auto search_end = std::chrono::high_resolution_clock::now();
+  std::cout << "Faiss search time: " << std::chrono::duration<double, std::milli>(search_end - search_start).count()
+            << " ms" << std::endl;
 
-  // Helper for L2 norm
-  auto l2_norm = [](const std::vector<float>& a, const std::vector<float>& b) {
-    float sum = 0.0f;
-    for (size_t i = 0; i < a.size(); ++i) {
-      float diff = a[i] - b[i];
-      sum += diff * diff;
-    }
-    return std::sqrt(sum);
-  };
-
-  // Print results using Faiss scores
-  for (size_t j = 0; j < sample_paths.size(); ++j) {
-    float vlad_score = l2_norm(vlad_query_vec, vlad_targets[j]);
-    vlad_scores[j] = vlad_score;
-    if (vlad_score >= min_score) {
-      std::cout << "MATCH: NetVLAD L2 distance (query <-> " << sample_paths[j].filename() << "): " << vlad_score
-                << std::endl;
-    } else {
-      std::cout << "NO MATCH: NetVLAD L2 distance (query <-> " << sample_paths[j].filename() << "): " << vlad_score
-                << std::endl;
-    }
+  // print matches and their distances
+  for (auto label : faiss_labels) {
+    std::cout << "Match label: " << label << std::endl;
   }
+  std::cout << "Faiss distances: ";
+  for (const auto& dist : faiss_distances) {
+    std::cout << dist << " ";
+  }
+  std::cout << std::endl;
 
   // Visualize the query and sampled images in one big image grid
   int grid_cols = 5;
@@ -222,22 +223,20 @@ int main(int argc, char* argv[]) {
     cv::rectangle(grid_img, cv::Rect(0, 0, thumb_w, thumb_h), cv::Scalar(0, 0, 255), 2);
   }
 
-  // Place sampled images below query image
-  for (size_t idx = 0; idx < sample_paths.size(); ++idx) {
+  // Only show the matched images (top-k matches)
+  for (size_t match_idx = 0; match_idx < faiss_labels.size(); ++match_idx) {
+    faiss::idx_t idx = faiss_labels[match_idx];
+    if (idx < 0 || idx >= static_cast<faiss::idx_t>(sample_paths.size())) continue;
     cv::Mat img = cv::imread(sample_paths[idx], cv::IMREAD_COLOR);
     if (img.empty()) continue;
     cv::Mat thumb;
     cv::resize(img, thumb, cv::Size(thumb_w, thumb_h));
-    int row = (idx / grid_cols) + 1;
-    int col = idx % grid_cols;
+    int row = (match_idx / grid_cols) + 1;
+    int col = match_idx % grid_cols;
     thumb.copyTo(grid_img(cv::Rect(col * thumb_w, row * thumb_h, thumb_w, thumb_h)));
-    // Highlight best match in green, other matches in yellow
-    if (idx == best_idx) {
-      cv::rectangle(grid_img, cv::Rect(col * thumb_w, row * thumb_h, thumb_w, thumb_h), cv::Scalar(0, 255, 0), 3);
-    } else if (vlad_scores[idx] >= min_score) {
-      cv::rectangle(grid_img, cv::Rect(col * thumb_w, row * thumb_h, thumb_w, thumb_h), cv::Scalar(0, 255, 255), 2);
-    }
+    cv::rectangle(grid_img, cv::Rect(col * thumb_w, row * thumb_h, thumb_w, thumb_h), cv::Scalar(0, 255, 0), 2);
   }
+  cv::imwrite("query_and_matches_grid.png", grid_img); // Save the grid image to file
   cv::imshow("Query + Sampled Images Grid", grid_img);
   cv::waitKey(0);
 
