@@ -12,15 +12,15 @@
 
 using namespace xfeat;
 
-XFeatONNX::XFeatONNX(const std::string& xfeat_path,
+XFeatONNX::XFeatONNX(Ort::Env& env,
+                     const std::string& xfeat_path,
                      const std::string& interp_bilinear_path,
                      const std::string& interp_bicubic_path,
                      const std::string& interp_nearest_path,
                      bool use_gpu,
                      MatcherType matcher_type,
                      std::unique_ptr<LighterGlueOnnx> lighterglue)
-    : env_(ORT_LOGGING_LEVEL_WARNING, "XFeatONNX"),
-      xfeat_session_(nullptr),
+    : xfeat_session_(nullptr),
       interp_bilinear_session_(nullptr),
       interp_bicubic_session_(nullptr),
       interp_nearest_session_(nullptr),
@@ -49,10 +49,10 @@ XFeatONNX::XFeatONNX(const std::string& xfeat_path,
     session_options_.AppendExecutionProvider_CUDA(cuda_options);
   }
 
-  xfeat_session_ = Ort::Session(env_, xfeat_path.c_str(), session_options_);
-  interp_bilinear_session_ = Ort::Session(env_, interp_bilinear_path.c_str(), session_options_);
-  interp_bicubic_session_ = Ort::Session(env_, interp_bicubic_path.c_str(), session_options_);
-  interp_nearest_session_ = Ort::Session(env_, interp_nearest_path.c_str(), session_options_);
+  xfeat_session_ = Ort::Session(env, xfeat_path.c_str(), session_options_);
+  interp_bilinear_session_ = Ort::Session(env, interp_bilinear_path.c_str(), session_options_);
+  interp_bicubic_session_ = Ort::Session(env, interp_bicubic_path.c_str(), session_options_);
+  interp_nearest_session_ = Ort::Session(env, interp_nearest_path.c_str(), session_options_);
 
   // Get input dimensions from the xfeat model
   auto input_node_names = xfeat_session_.GetInputNames();
@@ -248,8 +248,16 @@ cv::Mat XFeatONNX::nms(const cv::Mat& heatmap, float threshold, int kernel_size)
   return kpt_mat;
 }
 
-DetectionResult XFeatONNX::detect_and_compute(Ort::Session& session, cv::Mat image, int top_k, cv::Mat* heatmap) {
+DetectionResult XFeatONNX::detect_and_compute(Ort::Session& session,
+                                              cv::Mat image,
+                                              int top_k,
+                                              cv::Mat* heatmap,
+                                              cv::Mat* M1,
+                                              cv::Mat* x_prep) {
   auto [input_tensor, resize_rate_w, resize_rate_h] = preprocess_image(image);
+  if (x_prep) {
+    *x_prep = input_tensor.clone();  // Copy preprocessed image
+  }
 
   auto input_node_names = session.GetInputNames();
   auto output_node_names = session.GetOutputNames();
@@ -296,17 +304,26 @@ DetectionResult XFeatONNX::detect_and_compute(Ort::Session& session, cv::Mat ima
   int C = M1_shape_vec[1];
   int H = M1_shape_vec[2];
   int W = M1_shape_vec[3];
-  cv::Mat M1(C, H * W, CV_32F, (void*)M1_data);  // (C, H*W)
+
+  if (M1) {
+    // Ensure B == 1
+    assert(B == 1 && "Only batch size 1 is supported");
+    // Create a 3D OpenCV Mat with shape C x H x W
+    int sizes[] = {B, static_cast<int>(C), static_cast<int>(H), static_cast<int>(W)};
+    *M1 = cv::Mat(4, sizes, CV_32F, const_cast<float*>(M1_data));  // Wrap in Mat without copying
+  }
+
+  cv::Mat _M1(C, H * W, CV_32F, (void*)M1_data);  // (C, H*W)
   for (int i = 0; i < H * W; ++i) {
     float norm = 0.0f;
-    for (int c = 0; c < C; ++c) norm += M1.at<float>(c, i) * M1.at<float>(c, i);
+    for (int c = 0; c < C; ++c) norm += _M1.at<float>(c, i) * _M1.at<float>(c, i);
     norm = std::sqrt(norm) + 1e-8f;
-    for (int c = 0; c < C; ++c) M1.at<float>(c, i) /= norm;
+    for (int c = 0; c < C; ++c) _M1.at<float>(c, i) /= norm;
   }
   // Reshape back to (C, H, W)
   std::vector<cv::Mat> M1_channels;
   for (int c = 0; c < C; ++c) {
-    M1_channels.push_back(cv::Mat(H, W, CV_32F, M1.ptr<float>(c)));
+    M1_channels.push_back(cv::Mat(H, W, CV_32F, _M1.ptr<float>(c)));
   }
   cv::Mat M1_normed;
   cv::merge(M1_channels, M1_normed);  // (H, W, C)
@@ -548,7 +565,7 @@ std::tuple<cv::Mat, cv::Mat, cv::Mat, cv::Mat> XFeatONNX::match(cv::Mat image1,
             << std::endl;
 
   auto match_start = std::chrono::high_resolution_clock::now();
-  auto match_result = match(result1, result2, image1, top_k, min_cossim, timing_stats);
+  auto match_result = match(result1, result2, image1, min_cossim, timing_stats);
   auto match_end = std::chrono::high_resolution_clock::now();
 
   if (timing_stats) {
@@ -565,7 +582,6 @@ std::tuple<cv::Mat, cv::Mat, cv::Mat, cv::Mat> XFeatONNX::match(cv::Mat image1,
 std::tuple<cv::Mat, cv::Mat, cv::Mat, cv::Mat> XFeatONNX::match(const DetectionResult& result1,
                                                                 const DetectionResult& result2,
                                                                 cv::Mat image1,
-                                                                int top_k,
                                                                 float min_sim,
                                                                 TimingStats* timing_stats) {
   if (result1.keypoints.empty() || result2.keypoints.empty()) {
@@ -655,8 +671,12 @@ XFeatONNX::calc_warp_corners_and_matches(const cv::Mat& ref_points, const cv::Ma
   return {keypoints1, keypoints2, matches};
 }
 
-DetectionResult XFeatONNX::detect_and_compute(cv::Mat image, int top_k, cv::Mat* heatmap) {
-  return detect_and_compute(xfeat_session_, image, top_k, heatmap);
+DetectionResult XFeatONNX::detect_and_compute(cv::Mat image,
+                                              int top_k,
+                                              cv::Mat* heatmap,
+                                              cv::Mat* M1,
+                                              cv::Mat* x_prep) {
+  return detect_and_compute(xfeat_session_, image, top_k, heatmap, M1, x_prep);
 }
 
 std::tuple<std::vector<int>, std::vector<int>> XFeatONNX::match_mkpts_flann(const cv::Mat& feats1,
@@ -703,3 +723,13 @@ std::tuple<std::vector<int>, std::vector<int>> XFeatONNX::match_mkpts_flann(cons
   }
   return {idx0, idx1};
 }
+
+XFeatONNX::XFeatONNX(Ort::Env& env, const Params& params, std::unique_ptr<LighterGlueOnnx> lighterglue)
+    : XFeatONNX(env,
+                params.xfeat_path,
+                params.interp_bilinear_path,
+                params.interp_bicubic_path,
+                params.interp_nearest_path,
+                params.use_gpu,
+                params.matcher_type,
+                std::move(lighterglue)) {}

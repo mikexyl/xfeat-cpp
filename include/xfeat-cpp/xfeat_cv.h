@@ -13,10 +13,10 @@ class XFeatCV : public cv::Feature2D {
     int max_features;  // Default maximum number of features to detect
   };
 
-  XFeatCV(const Params& params = Params()) : Feature2D(), xfeat_onnx_(params), params_(params) {}
+  XFeatCV(Ort::Env& env, const Params& params = Params()) : Feature2D(), env_(env), xfeat_onnx_(env, params), params_(params) {}
 
   // Factory method to create an instance of XFeatCV
-  static cv::Ptr<XFeatCV> create(const Params& params) { return Ptr<XFeatCV>(new XFeatCV(params)); }
+  static cv::Ptr<XFeatCV> create(Ort::Env& env, const Params& params) { return Ptr<XFeatCV>(new XFeatCV(env, params)); }
 
   /** Detects keypoints and computes the descriptors */
   void detectAndCompute(InputArray image,
@@ -24,6 +24,20 @@ class XFeatCV : public cv::Feature2D {
                         CV_OUT std::vector<KeyPoint>& keypoints,
                         OutputArray descriptors,
                         bool useProvidedKeypoints = false) CV_OVERRIDE {
+    return detectAndCompute(image, mask, keypoints, descriptors, useProvidedKeypoints, nullptr, nullptr);
+  }
+
+  /** Detects keypoints and computes the descriptors */
+  void detectAndCompute(InputArray image,
+                        InputArray mask,
+                        CV_OUT std::vector<KeyPoint>& keypoints,
+                        OutputArray descriptors,
+                        bool useProvidedKeypoints,
+                        cv::Mat* M1,
+                        cv::Mat* x_prep) {
+    // not implemented
+    CV_Assert(!useProvidedKeypoints);
+
     if (not descriptors.empty()) {
       CV_Error(Error::StsBadArg, "Output descriptors must be empty.");
     }
@@ -36,7 +50,7 @@ class XFeatCV : public cv::Feature2D {
     keypoints.clear();
     // Call the XFeatONNX method to detect and compute keypoints and descriptors
 
-    auto result = xfeat_onnx_.detect_and_compute(image.getMat(), params_.max_features, nullptr);
+    auto result = xfeat_onnx_.detect_and_compute(image.getMat(), params_.max_features, nullptr, M1, x_prep);
     for (int i = 0; i < result.keypoints.rows; i++) {
       KeyPoint kp;
       kp.pt = Point2f(result.keypoints.at<float>(i, 0), result.keypoints.at<float>(i, 1));
@@ -85,6 +99,7 @@ class XFeatCV : public cv::Feature2D {
   String getDefaultName() const CV_OVERRIDE { return "XFeat"; }
 
  private:
+  Ort::Env& env_;
   Params params_;  // Parameters for XFeatCV
 
   XFeatONNX xfeat_onnx_;

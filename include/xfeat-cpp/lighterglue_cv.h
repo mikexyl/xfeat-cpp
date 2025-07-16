@@ -18,10 +18,12 @@ class LighterGlueCV {
     float n_kpts = 500;  // Default number of keypoints to detect
   };
 
-  explicit LighterGlueCV(const Params& params)
-      : matcher_(params.model_path, params.use_gpu), params_(params), min_score_(params.min_score) {}
+  explicit LighterGlueCV(Ort::Env& env, const Params& params)
+      : env_(env), matcher_(env, params.model_path, params.use_gpu), params_(params), min_score_(params.min_score) {}
 
-  static cv::Ptr<LighterGlueCV> create(const Params& params) { return cv::makePtr<LighterGlueCV>(params); }
+  static cv::Ptr<LighterGlueCV> create(Ort::Env& env, const Params& params) {
+    return cv::Ptr<LighterGlueCV>(new LighterGlueCV(env, params));
+  }
 
   // OpenCV-style: match keypoints and descriptors from two images
   void match(const DetectionResult& det0,
@@ -59,6 +61,7 @@ class LighterGlueCV {
   Params params_;
 
  private:
+  Ort::Env& env_;
   LighterGlueOnnx matcher_;
   float min_score_;
 };

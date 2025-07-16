@@ -15,7 +15,7 @@ namespace xfeat {
 class LighterGlueOnnx {
  public:
   // Load the ONNX model from file, optionally enable GPU
-  LighterGlueOnnx(const std::string& model_path, bool use_gpu = false);
+  LighterGlueOnnx(Ort::Env& env, const std::string& model_path, bool use_gpu = false);
 
   // Run inference: inputs are flattened row-major float arrays and 2-element image sizes
   void run(const std::vector<float>& mkpts0,
@@ -66,7 +66,6 @@ class LighterGlueOnnx {
   }
 
  private:
-  Ort::Env env_;
   Ort::SessionOptions session_options_;
   Ort::Session session_;
   // Input and output names
