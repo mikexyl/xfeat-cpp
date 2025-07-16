@@ -226,7 +226,7 @@ int main(int argc, char* argv[]) {
 
   // Visualize the query and sampled images in one big image grid
   int grid_cols = 5;
-  int grid_rows = (num_images + grid_cols - 1) / grid_cols;
+  int grid_rows = (k + grid_cols - 1) / grid_cols;
   int thumb_w = 160, thumb_h = 88;
   int total_rows = grid_rows + 1;
   cv::Mat grid_img = cv::Mat::zeros(total_rows * thumb_h, grid_cols * thumb_w, CV_8UC3);
