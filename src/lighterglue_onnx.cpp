@@ -1,6 +1,6 @@
 #include "xfeat-cpp/lighterglue_onnx.h"
 
-#include <onnxruntime/core/session/onnxruntime_cxx_api.h>
+#include <onnxruntime_cxx_api.h>
 
 #include <array>
 #include <iostream>
@@ -9,10 +9,7 @@
 namespace xfeat {
 
 LighterGlueOnnx::LighterGlueOnnx(Ort::Env& env, const std::string& model_path, bool use_gpu)
-    : session_options_(),
-      session_(nullptr),
-      input_names_(),
-      output_names_() {
+    : session_options_(), session_(nullptr), input_names_(), output_names_() {
   std::cout << "Loading LighterGlue ONNX model from: " << model_path << std::endl;
   session_options_.SetIntraOpNumThreads(1);
   session_options_.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_EXTENDED);

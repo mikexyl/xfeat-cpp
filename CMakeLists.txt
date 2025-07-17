@@ -37,7 +37,6 @@ target_include_directories(${PROJECT_NAME}
     $<INSTALL_INTERFACE:include>
     ${onnxruntime_INCLUDE_DIR}
     ${OpenCV_INCLUDE_DIRS}
-    $<TARGET_PROPERTY:faiss,INTERFACE_INCLUDE_DIRECTORIES>
     ${CUBLAS_DIR}/include
 )
 

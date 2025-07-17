@@ -1,7 +1,7 @@
 #pragma once
 
 #include <opencv2/core.hpp>
-#include <onnxruntime/core/session/onnxruntime_cxx_api.h>
+#include <onnxruntime_cxx_api.h>
 #include <string>
 #include <memory>
 
