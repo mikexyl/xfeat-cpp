@@ -15,7 +15,7 @@ class LighterGlueCV {
     std::string model_path;
     bool use_gpu = false;
     float min_score = 0.5f;
-    float n_kpts = 500;  // Default number of keypoints to detect
+    int n_kpts = 500;  // Default number of keypoints to detect
   };
 
   explicit LighterGlueCV(Ort::Env& env, const Params& params)
@@ -55,6 +55,13 @@ class LighterGlueCV {
     for (size_t i = 0; i < idx0.size(); ++i) {
       matches.emplace_back(idx0[i], idx1[i], 0.f);  // Score not available in DMatch
     }
+  }
+
+  void knnMatch(const cv::Mat& curr_desc,
+                const cv::Mat& ref_desc,
+                std::vector<std::vector<cv::DMatch>>& matches,
+                int k) {
+    throw std::runtime_error("knnMatch is not implemented");
   }
 
  public:

@@ -4,6 +4,7 @@
 #include <faiss/gpu/GpuIndexFlat.h>
 #include <faiss/gpu/StandardGpuResources.h>
 #include <faiss/index_io.h>
+#include <faiss/utils/distances.h>
 #include <onnxruntime_cxx_api.h>
 
 #include <algorithm>
@@ -15,6 +16,7 @@
 #include <string>
 #include <vector>
 
+#include "xfeat-cpp/faiss_database.h"
 #include "xfeat-cpp/netvlad_onnx.h"
 #include "xfeat-cpp/xfeat_netvlad_onnx.h"
 #include "xfeat-cpp/xfeat_onnx.h"
@@ -27,7 +29,7 @@ int main(int argc, char* argv[]) {
   std::filesystem::path image_folder((argc > 1) ? argv[1] : "image");
   const std::string image_resolution = "640x480";
   constexpr int max_kpts = 500;
-  const int num_images = 4000;
+  const int num_images = 100;
 
   std::filesystem::path xfeat_model_folder = (argc > 2) ? argv[2] : "onnx_model";
   std::filesystem::path xfeat_model_path = xfeat_model_folder / ("xfeat_" + image_resolution + ".onnx");
@@ -121,6 +123,19 @@ int main(int argc, char* argv[]) {
   }
   auto vlad_query = extract_netvlad_desc(query_img);
 
+  // --- Get the image 10 frames before the query image (if possible) ---
+  float vlad_threshold = 0.0f;
+  if (query_idx >= 10) {
+    auto before10_path = all_image_paths[query_idx - 10];
+    cv::Mat before10_img = cv::imread(before10_path, cv::IMREAD_GRAYSCALE);
+    if (!before10_img.empty()) {
+      auto vlad_before10 = extract_netvlad_desc(before10_img);
+      // faiss::fvec_L2sqr(a, b, d)
+      vlad_threshold = faiss::fvec_L2sqr(vlad_query[0].data(), vlad_before10[0].data(), vlad_query[0].size());
+      std::cout << "VLAD distance to image 10 frames before: " << vlad_threshold << std::endl;
+    }
+  }
+
   // Randomly select 20 sample images (excluding the query image)
   std::vector<std::filesystem::path> sample_paths = all_image_paths;
   sample_paths.erase(sample_paths.begin() + query_idx);
@@ -157,20 +172,7 @@ int main(int argc, char* argv[]) {
 
   // === FAISS index loading and transfer to GPU ===
   std::filesystem::path faiss_index_path = xfeat_model_folder / "faiss_ivfflat.index.bin";
-  faiss::Index* cpu_index = nullptr;
-  try {
-    cpu_index = faiss::read_index(faiss_index_path.string().c_str());
-  } catch (const std::exception& e) {
-    std::cerr << "Failed to load Faiss index: " << e.what() << std::endl;
-    return 1;
-  }
-
-  faiss::gpu::StandardGpuResources res;
-  int gpu_id = 0;
-  faiss::gpu::GpuClonerOptions opts;
-  opts.useFloat16 = false;
-
-  faiss::Index* gpu_index = faiss::gpu::index_cpu_to_gpu(&res, gpu_id, cpu_index, &opts);
+  xfeat::FaissDatabase faiss_db(faiss_index_path.string());
 
   // === FLATTEN and ADD VLAD TARGETS TO INDEX ===
   int n = static_cast<int>(vlad_targets.size());
@@ -178,29 +180,32 @@ int main(int argc, char* argv[]) {
   for (int i = 0; i < n; ++i) {
     std::copy(vlad_targets[i].begin(), vlad_targets[i].end(), flat_targets.begin() + i * vlad_dim);
   }
-
-  // You must call add() before search!
-  gpu_index->add(n, flat_targets.data());
+  cv::Mat flat_targets_mat(n, vlad_dim, CV_32F, flat_targets.data());
+  faiss_db.add(flat_targets_mat);
 
   // === SEARCH TOP-K ===
   int k = 30;
   std::vector<faiss::idx_t> faiss_labels(k);
   std::vector<float> faiss_distances(k);
+  cv::Mat vlad_query_mat(1, vlad_dim, CV_32F, vlad_query_vec.data());
 
   // Time the search function
   auto search_start = std::chrono::high_resolution_clock::now();
-  gpu_index->search(1, vlad_query_vec.data(), k, faiss_distances.data(), faiss_labels.data());
+  faiss_db.search(vlad_query_mat, k, faiss_labels, faiss_distances);
   auto search_end = std::chrono::high_resolution_clock::now();
   std::cout << "Faiss search time: " << std::chrono::duration<double, std::milli>(search_end - search_start).count()
             << " ms" << std::endl;
 
   // print matches and their distances
-  for (auto label : faiss_labels) {
+  for (size_t i = 0; i < faiss_labels.size(); ++i) {
+    if (vlad_threshold > 0.0f && faiss_distances[i] > vlad_threshold) continue;
+    auto label = faiss_labels[i];
     std::cout << "Match label: " << label << std::endl;
   }
   std::cout << "Faiss distances: ";
-  for (const auto& dist : faiss_distances) {
-    std::cout << dist << " ";
+  for (size_t i = 0; i < faiss_distances.size(); ++i) {
+    if (vlad_threshold > 0.0f && faiss_distances[i] > vlad_threshold) continue;
+    std::cout << faiss_distances[i] << " ";
   }
   std::cout << std::endl;
 
@@ -226,29 +231,52 @@ int main(int argc, char* argv[]) {
 
   // Visualize the query and sampled images in one big image grid
   int grid_cols = 5;
-  int grid_rows = (k + grid_cols - 1) / grid_cols;
+  int num_matched = 0;
+  for (size_t match_idx = 0; match_idx < faiss_labels.size(); ++match_idx) {
+    if (faiss_labels[match_idx] < 0 || faiss_labels[match_idx] >= static_cast<faiss::idx_t>(sample_paths.size())) continue;
+    if (vlad_threshold > 0.0f && faiss_distances[match_idx] > vlad_threshold) continue;
+    ++num_matched;
+  }
+  int grid_offset = 2; // rows for query and before10
+  int grid_rows = ((num_matched + grid_cols - 1) / grid_cols) + grid_offset;
   int thumb_w = 160, thumb_h = 88;
-  int total_rows = grid_rows + 1;
-  cv::Mat grid_img = cv::Mat::zeros(total_rows * thumb_h, grid_cols * thumb_w, CV_8UC3);
+  cv::Mat grid_img = cv::Mat::zeros(grid_rows * thumb_h, grid_cols * thumb_w, CV_8UC3);
 
-  // Place query image at the top left
+  // Place query image and before10 image at the top left
   cv::Mat query_img_color = cv::imread(query_path, cv::IMREAD_COLOR);
+  cv::Mat before10_img_color;
+  if (query_idx >= 10) {
+    before10_img_color = cv::imread(all_image_paths[query_idx - 10], cv::IMREAD_COLOR);
+  }
   if (!query_img_color.empty()) {
     cv::Mat query_thumb;
     cv::resize(query_img_color, query_thumb, cv::Size(thumb_w, thumb_h));
     query_thumb.copyTo(grid_img(cv::Rect(0, 0, thumb_w, thumb_h)));
     cv::rectangle(grid_img, cv::Rect(0, 0, thumb_w, thumb_h), cv::Scalar(0, 0, 255), 2);
+    cv::putText(grid_img, "Query", cv::Point(5, 20), cv::FONT_HERSHEY_SIMPLEX, 0.7, cv::Scalar(0,0,255), 2);
+  }
+  if (!before10_img_color.empty()) {
+    cv::Mat before10_thumb;
+    cv::resize(before10_img_color, before10_thumb, cv::Size(thumb_w, thumb_h));
+    before10_thumb.copyTo(grid_img(cv::Rect(thumb_w, 0, thumb_w, thumb_h)));
+    cv::rectangle(grid_img, cv::Rect(thumb_w, 0, thumb_w, thumb_h), cv::Scalar(255, 0, 0), 2);
+    cv::putText(grid_img, "Before-10", cv::Point(thumb_w + 5, 20), cv::FONT_HERSHEY_SIMPLEX, 0.7, cv::Scalar(255,0,0), 2);
+    // Print the before10 distance on the image
+    char dist_text[64];
+    snprintf(dist_text, sizeof(dist_text), "Dist: %.2f", vlad_threshold);
+    cv::putText(grid_img, dist_text, cv::Point(thumb_w + 5, thumb_h - 10), cv::FONT_HERSHEY_SIMPLEX, 0.7, cv::Scalar(255,0,0), 2);
   }
 
   // Only show the matched images (top-k matches)
+  int match_count = 0;
   for (size_t match_idx = 0; match_idx < faiss_labels.size(); ++match_idx) {
     faiss::idx_t idx = faiss_labels[match_idx];
     if (idx < 0 || idx >= static_cast<faiss::idx_t>(sample_paths.size())) continue;
+    if (vlad_threshold > 0.0f && faiss_distances[match_idx] > vlad_threshold) continue;
     cv::Mat img = cv::imread(sample_paths[idx], cv::IMREAD_COLOR);
     if (img.empty()) continue;
     cv::Mat thumb;
     cv::resize(img, thumb, cv::Size(thumb_w, thumb_h));
-    // Draw LighterGlue match count on the thumbnail
     std::string text = "LG: " + std::to_string(lighterglue_match_counts[match_idx]);
     int font = cv::FONT_HERSHEY_SIMPLEX;
     double font_scale = 0.7;
@@ -257,10 +285,18 @@ int main(int argc, char* argv[]) {
     cv::Size text_size = cv::getTextSize(text, font, font_scale, thickness, &baseline);
     cv::Point text_org(5, thumb_h - 10);
     cv::putText(thumb, text, text_org, font, font_scale, cv::Scalar(0, 255, 255), thickness, cv::LINE_AA);
-    int row = (match_idx / grid_cols) + 1;
-    int col = match_idx % grid_cols;
-    thumb.copyTo(grid_img(cv::Rect(col * thumb_w, row * thumb_h, thumb_w, thumb_h)));
-    cv::rectangle(grid_img, cv::Rect(col * thumb_w, row * thumb_h, thumb_w, thumb_h), cv::Scalar(0, 255, 0), 2);
+    // Print the distance on the image
+    char match_dist_text[64];
+    snprintf(match_dist_text, sizeof(match_dist_text), "Dist: %.2f", faiss_distances[match_idx]);
+    cv::putText(thumb, match_dist_text, cv::Point(5, 30), font, 0.7, cv::Scalar(255,255,0), 2);
+    int row = (match_count / grid_cols) + grid_offset;
+    int col = match_count % grid_cols;
+    if ((row + 1) * thumb_h <= grid_img.rows && (col + 1) * thumb_w <= grid_img.cols) {
+      thumb.copyTo(grid_img(cv::Rect(col * thumb_w, row * thumb_h, thumb_w, thumb_h)));
+      cv::Scalar rect_color = (vlad_threshold > 0.0f && faiss_distances[match_idx] <= vlad_threshold) ? cv::Scalar(0,0,255) : cv::Scalar(0,255,0);
+      cv::rectangle(grid_img, cv::Rect(col * thumb_w, row * thumb_h, thumb_w, thumb_h), rect_color, 2);
+    }
+    ++match_count;
   }
   cv::imwrite("query_and_matches_grid.png", grid_img);  // Save the grid image to file
   cv::imshow("Query + Sampled Images Grid", grid_img);
