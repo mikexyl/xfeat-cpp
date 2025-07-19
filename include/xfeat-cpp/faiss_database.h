@@ -1,6 +1,7 @@
 #pragma once
 
 #include <faiss/Index.h>
+#include <faiss/IndexFlat.h>
 #include <faiss/IndexIVF.h>
 #include <faiss/gpu/GpuCloner.h>
 #include <faiss/gpu/StandardGpuResources.h>
@@ -19,16 +20,32 @@ class FaissDatabase {
   using QueryResults = std::vector<faiss::idx_t>;
   using QueryDistances = std::vector<float>;
 
+  enum class IndexMode {
+    kFlat = 0,
+    kIVFFlat = 1,
+  };
+
   // Load a FAISS index from file, use GPU if available
-  explicit FaissDatabase(const std::string& index_path) {
-    std::unique_ptr<faiss::Index> cpu_index(faiss::read_index(index_path.c_str()));
-    if (!cpu_index) {
-      throw std::runtime_error("Failed to load FAISS index from " + index_path);
+  explicit FaissDatabase(IndexMode mode = IndexMode::kFlat, const std::string& index_path = {}) {
+    if (mode == IndexMode::kIVFFlat) {
+      std::unique_ptr<faiss::Index> cpu_index(faiss::read_index(index_path.c_str()));
+      if (!cpu_index) {
+        throw std::runtime_error("Failed to load FAISS index from " + index_path);
+      }
+      res_ = std::make_unique<faiss::gpu::StandardGpuResources>();
+      faiss::gpu::GpuClonerOptions opts;
+      opts.useFloat16 = false;
+      index_.reset(faiss::gpu::index_cpu_to_gpu(res_.get(), 0, cpu_index.get(), &opts));
+    } else if (mode == IndexMode::kFlat) {
+      // Create a flat index
+      res_ = std::make_unique<faiss::gpu::StandardGpuResources>();
+      faiss::IndexFlatL2* flat_index = new faiss::IndexFlatL2(0);  // 0 dimension for now
+      faiss::gpu::GpuClonerOptions opts;
+      opts.useFloat16 = false;
+      index_.reset(faiss::gpu::index_cpu_to_gpu(res_.get(), 0, flat_index, &opts));
+    } else {
+      throw std::invalid_argument("Unsupported IndexMode");
     }
-    res_ = std::make_unique<faiss::gpu::StandardGpuResources>();
-    faiss::gpu::GpuClonerOptions opts;
-    opts.useFloat16 = false;
-    index_.reset(faiss::gpu::index_cpu_to_gpu(res_.get(), 0, cpu_index.get(), &opts));
   }
 
   // Add descriptors to the index

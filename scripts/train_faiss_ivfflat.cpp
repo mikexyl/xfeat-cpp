@@ -33,7 +33,7 @@ int main(int argc, char* argv[]) {
   ifs.read(reinterpret_cast<char*>(faiss_db.data()), nb * dim * sizeof(float));
   ifs.close();
 
-  int nlist = 256;  // number of clusters
+  int nlist = 256*2;  // number of clusters
   if (mode == "ivfpq") {
     nlist = 256;    // for IVFPQ, you might want more clusters
     int m = 16;     // number of subquantizers

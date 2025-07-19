@@ -23,6 +23,8 @@ HeadNetVLADONNX::HeadNetVLADONNX(Ort::Env& env, const std::string& model_path, b
 cv::Mat HeadNetVLADONNX::run(const cv::Mat& M1, const cv::Mat& x_prep) {
   // Check input types
   if (M1.type() != CV_32F || x_prep.type() != CV_32F) {
+    std::cerr << "M1 type: " << M1.type() << ", x_prep type: " << x_prep.type() << std::endl;
+    std::cerr << "M1 size: " << M1.size() << ", x_prep size: " << x_prep.size() << std::endl;
     throw std::invalid_argument("Inputs must be CV_32F (float32)");
   }
 
