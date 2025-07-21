@@ -58,7 +58,7 @@ class LighterGlueOnnx {
     auto [matches, scores] = match(mkpts0, feats0, image0_size, mkpts1, feats1, image1_size);
     std::vector<int> idx0, idx1;
     for (size_t i = 0; i < matches.size(); ++i) {
-      if (scores[i] < min_score) continue;  // Filter by score
+      if (min_score >= 0 && scores[i] < min_score) continue;  // Filter by score
       idx0.push_back(matches[i][0]);
       idx1.push_back(matches[i][1]);
     }

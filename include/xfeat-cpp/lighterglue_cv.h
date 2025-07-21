@@ -13,8 +13,8 @@ class LighterGlueCV {
  public:
   struct Params {
     std::string model_path;
-    bool use_gpu = false;
-    float min_score = 0.5f;
+    bool use_gpu = true;
+    float min_score = -1.f;
     int n_kpts = 500;  // Default number of keypoints to detect
   };
 

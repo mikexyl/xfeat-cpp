@@ -9,5 +9,5 @@ find_package(TBB REQUIRED)
 
 include("${CMAKE_CURRENT_LIST_DIR}/xfeat-cppTargets.cmake")
 
-set(xfeat-cpp_INCLUDE_DIRS "@PACKAGE_INCLUDE_INSTALL_DIR@" ${onnxruntime_INCLUDE_DIR})
+set(xfeat-cpp_INCLUDE_DIRS "@PACKAGE_INCLUDE_INSTALL_DIR@" "${CMAKE_CURRENT_LIST_DIR}/../include" ${onnxruntime_INCLUDE_DIR})
 set(xfeat-cpp_LIBRARIES xfeat-cpp ${onnxruntime_LIBRARY})
