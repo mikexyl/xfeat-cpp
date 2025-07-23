@@ -10,6 +10,8 @@
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
 
+#include "xfeat-cpp/helpers.h"
+
 using namespace xfeat;
 
 XFeatONNX::XFeatONNX(Ort::Env& env,
@@ -18,6 +20,7 @@ XFeatONNX::XFeatONNX(Ort::Env& env,
                      const std::string& interp_bicubic_path,
                      const std::string& interp_nearest_path,
                      bool use_gpu,
+                     int nkpts,
                      MatcherType matcher_type,
                      std::unique_ptr<LighterGlueOnnx> lighterglue)
     : xfeat_session_(nullptr),
@@ -74,6 +77,14 @@ XFeatONNX::XFeatONNX(Ort::Env& env,
     }
   } else {
     lighterglue_.reset();
+  }
+
+  if (matcher_type_ == MatcherType::GPU_BF) {
+    std::cout << "Using GPU BF matcher." << std::endl;
+    gpu_matcher_ = std::make_unique<CuMatcher>();
+    gpu_matcher_->init(nkpts, nkpts, 64);  // Assuming 128 is the descriptor dimension
+  } else {
+    gpu_matcher_.reset();
   }
 
   // TODO(mike): add manully triggered warmup
@@ -253,7 +264,8 @@ DetectionResult XFeatONNX::detect_and_compute(Ort::Session& session,
                                               int top_k,
                                               cv::Mat* heatmap,
                                               cv::Mat* M1,
-                                              cv::Mat* x_prep) {
+                                              cv::Mat* x_prep,
+                                              std::vector<cv::Vec2d>* std) {
   auto [input_tensor, resize_rate_w, resize_rate_h] = preprocess_image(image);
   if (x_prep) {
     *x_prep = input_tensor.clone();  // Copy preprocessed image
@@ -459,20 +471,20 @@ DetectionResult XFeatONNX::detect_and_compute(Ort::Session& session,
     pt.y *= resize_rate_h;
   }
   // Filter valid keypoints (score > 0)
-  std::vector<cv::Point2f> valid_kpts;
+  std::vector<cv::KeyPoint> valid_kpts;
   std::vector<float> valid_scores;
   std::vector<cv::Mat> valid_feats;
   for (int i = 0; i < n_kpts; ++i) {
     if (topk_scores[i] > 0) {
-      valid_kpts.push_back(topk_kpts[i]);
+      valid_kpts.push_back({topk_kpts[i], 1});
       valid_scores.push_back(topk_scores[i]);
       valid_feats.push_back(feats_mat.row(i));
     }
   }
   cv::Mat valid_kpts_mat(valid_kpts.size(), 2, CV_32F);
   for (int i = 0; i < valid_kpts.size(); ++i) {
-    valid_kpts_mat.at<float>(i, 0) = valid_kpts[i].x;
-    valid_kpts_mat.at<float>(i, 1) = valid_kpts[i].y;
+    valid_kpts_mat.at<float>(i, 0) = valid_kpts[i].pt.x;
+    valid_kpts_mat.at<float>(i, 1) = valid_kpts[i].pt.y;
   }
   cv::Mat valid_scores_mat(valid_scores.size(), 1, CV_32F, valid_scores.data());
   cv::Mat valid_feats_mat(valid_feats.size(), feat_dim, CV_32F);
@@ -483,6 +495,16 @@ DetectionResult XFeatONNX::detect_and_compute(Ort::Session& session,
   det.keypoints = valid_kpts_mat;
   det.scores = valid_scores_mat;
   det.descriptors = valid_feats_mat;
+
+  if (std) {
+    std->clear();
+    *std = computeUncertaintySobel(K1h, valid_kpts);
+    // std times resize rates
+    for (auto& s : *std) {
+      s[0] *= resize_rate_w;
+      s[1] *= resize_rate_h;
+    }
+  }
   return det;  // Placeholder
 }
 
@@ -590,6 +612,9 @@ std::tuple<cv::Mat, cv::Mat, cv::Mat, cv::Mat> XFeatONNX::match(const DetectionR
   }
 
   std::vector<int> indexes1, indexes2;
+  std::vector<int> best_index;
+  std::vector<float> best_scores;
+  std::vector<cv::KeyPoint> keypoints1, keypoints2;
   auto t0 = std::chrono::high_resolution_clock::now();
   switch (matcher_type_) {
     case MatcherType::BF:
@@ -597,6 +622,13 @@ std::tuple<cv::Mat, cv::Mat, cv::Mat, cv::Mat> XFeatONNX::match(const DetectionR
       break;
     case MatcherType::FLANN:
       std::tie(indexes1, indexes2) = match_mkpts_flann(result1.descriptors, result2.descriptors, min_sim);
+      break;
+    case MatcherType::GPU_BF:
+      if (!gpu_matcher_) {
+        throw std::runtime_error("GPU BF matcher is not initialized.");
+      }
+      std::tie(indexes1, indexes2) = gpu_matcher_->match_mkpts(result1.descriptors, result2.descriptors, min_sim);
+      std::cout << "GPU BF matcher found " << indexes1.size() << " matches." << std::endl;
       break;
     case MatcherType::LIGHTERGLUE:
       if (!lighterglue_) {
@@ -626,7 +658,8 @@ std::tuple<cv::Mat, cv::Mat, cv::Mat, cv::Mat> XFeatONNX::match(const DetectionR
   }
 
   // Filter matches using homography (RANSAC)
-  auto [keypoints1, keypoints2, matches] = calc_warp_corners_and_matches(mkpts0, mkpts1, image1);
+  std::vector<cv::DMatch> matches;
+  std::tie(keypoints1, keypoints2, matches) = calc_warp_corners_and_matches(mkpts0, mkpts1, image1);
 
   // Convert filtered keypoints back to cv::Mat for return
   cv::Mat filtered_mkpts0((int)matches.size(), 2, CV_32F);
@@ -675,8 +708,9 @@ DetectionResult XFeatONNX::detect_and_compute(cv::Mat image,
                                               int top_k,
                                               cv::Mat* heatmap,
                                               cv::Mat* M1,
-                                              cv::Mat* x_prep) {
-  return detect_and_compute(xfeat_session_, image, top_k, heatmap, M1, x_prep);
+                                              cv::Mat* x_prep,
+                                              std::vector<cv::Vec2d>* std) {
+  return detect_and_compute(xfeat_session_, image, top_k, heatmap, M1, x_prep, std);
 }
 
 std::tuple<std::vector<int>, std::vector<int>> XFeatONNX::match_mkpts_flann(const cv::Mat& feats1,
@@ -731,5 +765,6 @@ XFeatONNX::XFeatONNX(Ort::Env& env, const Params& params, std::unique_ptr<Lighte
                 params.interp_bicubic_path,
                 params.interp_nearest_path,
                 params.use_gpu,
+                params.nkpts,
                 params.matcher_type,
                 std::move(lighterglue)) {}

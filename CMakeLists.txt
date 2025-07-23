@@ -11,8 +11,30 @@ find_package(OpenCV REQUIRED)
 find_package(onnxruntime REQUIRED)
 find_package(TBB REQUIRED)
 find_package(faiss REQUIRED)
+find_package(CUDAToolkit REQUIRED)
 
-add_library(${PROJECT_NAME} SHARED
+set(CMAKE_CUDA_ARCHITECTURES 89)             # adjust to your GPU
+
+enable_language(CUDA)
+# ------------- target
+add_library(gpu_matcher
+    src/gpu_matcher.cu
+)
+
+target_compile_features(gpu_matcher PUBLIC cxx_std_17)
+target_link_libraries(gpu_matcher
+    PRIVATE
+        ${OpenCV_LIBS}
+        CUDA::cublas            # cuBLAS
+        CUDA::cudart            # CUDA runtime
+)
+target_include_directories(gpu_matcher
+    PRIVATE
+        ${OpenCV_INCLUDE_DIRS}
+        include
+)
+
+add_library(${PROJECT_NAME}
     src/xfeat_onnx.cpp
     src/lighterglue_onnx.cpp
     src/xfeat_cv.cpp
@@ -26,6 +48,7 @@ target_link_libraries(${PROJECT_NAME}
     TBB::tbb
     TBB::tbbmalloc
     faiss
+    gpu_matcher
 )
 
 option(CUBLAS_DIR "Path to CUBLAS installation")
@@ -40,9 +63,9 @@ target_include_directories(${PROJECT_NAME}
     ${CUBLAS_DIR}/include
 )
 
-add_subdirectory(examples)
 add_subdirectory(scripts)
 add_subdirectory(tests)
+add_subdirectory(examples)
 
 include(CMakePackageConfigHelpers)
 
@@ -76,4 +99,14 @@ install(FILES
 install(FILES
     "${CMAKE_CURRENT_SOURCE_DIR}/cmake/Findonnxruntime.cmake"
     DESTINATION lib/cmake/${PROJECT_NAME}
+)
+
+include(CMakePackageConfigHelpers)
+
+# Install and export gpu_matcher target
+install(TARGETS gpu_matcher
+    EXPORT xfeat-cppTargets
+    ARCHIVE DESTINATION lib
+    LIBRARY DESTINATION lib
+    RUNTIME DESTINATION bin
 )

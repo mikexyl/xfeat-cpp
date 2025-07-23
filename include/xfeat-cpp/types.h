@@ -10,6 +10,6 @@ struct DetectionResult {
   cv::Mat descriptors;
 };
 
-enum class MatcherType { BF = 0, FLANN = 1, LIGHTERGLUE = 2 };
+enum class MatcherType { BF = 0, FLANN = 1, LIGHTERGLUE = 2, GPU_BF = 3 };
 
 }  // namespace xfeat

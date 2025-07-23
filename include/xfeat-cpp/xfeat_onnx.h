@@ -6,6 +6,7 @@
 #include <opencv2/core/mat.hpp>
 #include <string>
 
+#include "xfeat-cpp/gpu_matcher.h"
 #include "xfeat-cpp/lighterglue_onnx.h"
 #include "xfeat-cpp/types.h"
 
@@ -21,6 +22,7 @@ class XFeatONNX {
     std::string interp_bicubic_path;
     std::string interp_nearest_path;
     bool use_gpu = false;
+    int nkpts = 4096;  // Default number of keypoints
     MatcherType matcher_type = MatcherType::FLANN;  // Default to BFMatcher
   };
 
@@ -31,6 +33,7 @@ class XFeatONNX {
             const std::string& interp_bicubic_path,
             const std::string& interp_nearest_path,
             bool use_gpu,
+            int nkpts,
             MatcherType matcher_type,
             std::unique_ptr<LighterGlueOnnx> lighterglue = nullptr);
 
@@ -55,7 +58,8 @@ class XFeatONNX {
                                      int top_k = 4096,
                                      cv::Mat* heatmap = nullptr,
                                      cv::Mat* M1 = nullptr,
-                                     cv::Mat* x_prep = nullptr);
+                                     cv::Mat* x_prep = nullptr,
+                                     std::vector<cv::Vec2d>* std = nullptr);
 
  private:
   Ort::SessionOptions session_options_;
@@ -69,6 +73,7 @@ class XFeatONNX {
   int input_height_;
   const MatcherType matcher_type_;
   std::unique_ptr<LighterGlueOnnx> lighterglue_;
+  std::unique_ptr<CuMatcher> gpu_matcher_;
 
  private:
   std::string interp_input_name1_;
@@ -88,7 +93,8 @@ class XFeatONNX {
                                      int top_k = 4096,
                                      cv::Mat* heatmap = nullptr,
                                      cv::Mat* M1 = nullptr,
-                                     cv::Mat* x_prep = nullptr);
+                                     cv::Mat* x_prep = nullptr,
+                                     std::vector<cv::Vec2d>* std = nullptr);
 
   std::tuple<std::vector<int>, std::vector<int>> match_mkpts_bf(const cv::Mat& feats1,
                                                                 const cv::Mat& feats2,

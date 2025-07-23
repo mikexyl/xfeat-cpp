@@ -13,7 +13,8 @@ class XFeatCV : public cv::Feature2D {
     int max_features;  // Default maximum number of features to detect
   };
 
-  XFeatCV(Ort::Env& env, const Params& params = Params()) : Feature2D(), env_(env), xfeat_onnx_(env, params), params_(params) {}
+  XFeatCV(Ort::Env& env, const Params& params = Params())
+      : Feature2D(), env_(env), xfeat_onnx_(env, params), params_(params) {}
 
   // Factory method to create an instance of XFeatCV
   static cv::Ptr<XFeatCV> create(Ort::Env& env, const Params& params) { return Ptr<XFeatCV>(new XFeatCV(env, params)); }
@@ -24,7 +25,7 @@ class XFeatCV : public cv::Feature2D {
                         CV_OUT std::vector<KeyPoint>& keypoints,
                         OutputArray descriptors,
                         bool useProvidedKeypoints = false) CV_OVERRIDE {
-    return detectAndCompute(image, mask, keypoints, descriptors, useProvidedKeypoints, nullptr, nullptr);
+    return detectAndCompute(image, mask, keypoints, descriptors, useProvidedKeypoints, nullptr, nullptr, nullptr);
   }
 
   /** Detects keypoints and computes the descriptors */
@@ -34,7 +35,8 @@ class XFeatCV : public cv::Feature2D {
                         OutputArray descriptors,
                         bool useProvidedKeypoints,
                         cv::Mat* M1,
-                        cv::Mat* x_prep) {
+                        cv::Mat* x_prep,
+                        std::vector<cv::Vec2d>* stds = nullptr) {
     // not implemented
     CV_Assert(!useProvidedKeypoints);
 
@@ -50,7 +52,7 @@ class XFeatCV : public cv::Feature2D {
     keypoints.clear();
     // Call the XFeatONNX method to detect and compute keypoints and descriptors
 
-    auto result = xfeat_onnx_.detect_and_compute(image.getMat(), params_.max_features, nullptr, M1, x_prep);
+    auto result = xfeat_onnx_.detect_and_compute(image.getMat(), params_.max_features, nullptr, M1, x_prep, stds);
     for (int i = 0; i < result.keypoints.rows; i++) {
       KeyPoint kp;
       kp.pt = Point2f(result.keypoints.at<float>(i, 0), result.keypoints.at<float>(i, 1));

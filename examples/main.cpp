@@ -8,19 +8,106 @@
 #include <vector>
 
 #include "xfeat-cpp/helpers.h"
+#include "xfeat-cpp/lighterglue_cv.h"
 #include "xfeat-cpp/xfeat_onnx.h"
 
 using namespace xfeat;
+
+/**
+ * Find, for each keypoint, the indices of visually–and–spatially similar neighbours.
+ *
+ * @param keypoints     N×2 matrix (CV_32F) of (x,y) image coordinates.
+ * @param descriptors   N×D descriptor matrix (CV_8U for ORB; CV_32F for float nets).
+ * @param neighbours    Output: neighbours[i] holds indices of keypoints similar to i.
+ * @param k             Max. number of descriptor neighbours to consider (>=1).
+ * @param maxDescDist   Hamming (for CV_8U) or L2 (for CV_32F) threshold.
+ * @param maxPixDist    Maximum pixel distance between keypoints to be considered neighbours.
+ */
+#pragma once
+#include <opencv2/opencv.hpp>
+#include <vector>
+
+/**
+ * Find visually + spatially similar neighbours for a *masked* subset of keypoints,
+ * using an individual descriptor-distance threshold for each keypoint.
+ *
+ * @param keypoints        N×2  (CV_32F) matrix of (x,y) image coordinates.
+ * @param descriptors      N×D  descriptor matrix (CV_8U binary OR CV_32F float).
+ * @param neighbours       Output: size N.  For i with mask(i)=0 list is empty.
+ * @param maxDescDistVec   Length-N vector: max. descriptor distance tolerated for each query kp.
+ *                         • For binary descriptors ➜ Hamming threshold (int, 0–256)
+ *                         • For float  descriptors ➜ L2 threshold      (float)
+ * @param mask             Optional N×1 (CV_8U) column; non-zero ⇒ kp is considered. Pass cv::Mat() to use all.
+ * @param k                How many nearest-descriptor candidates to test (≥1, default 3).
+ * @param maxPixDist       Maximum pixel distance allowed between neighbouring keypoints.
+ */
+inline void findSimilarNeighbours(const cv::Mat& keypoints,
+                                  const cv::Mat& descriptors,
+                                  std::vector<std::vector<int>>& neighbours,
+                                  const std::vector<float>& maxDescDistVec,  // NEW
+                                  const cv::Mat& mask = cv::Mat(),
+                                  int k = 3,
+                                  float maxPixDist = 5.f) {
+  CV_Assert(keypoints.rows == descriptors.rows);
+  const int N = keypoints.rows;
+  CV_Assert(static_cast<int>(maxDescDistVec.size()) == N);
+  CV_Assert(keypoints.cols == 2);
+  CV_Assert(descriptors.rows == N);
+
+  /* ---------- prepare / sanity-check mask ---------- */
+  cv::Mat useMask;
+  if (mask.empty()) {
+    useMask = cv::Mat::ones(N, 1, CV_8U);
+  } else {
+    CV_Assert(mask.rows == N && mask.cols == 1 && mask.type() == CV_8U);
+    useMask = mask;
+  }
+
+  neighbours.assign(N, {});
+
+  /* ---------- choose descriptor norm automatically ---------- */
+  const bool binaryDesc = descriptors.type() == CV_8U || descriptors.type() == CV_8S;
+  const int normType = binaryDesc ? cv::NORM_HAMMING : cv::NORM_L2;
+
+  /* ---------- 1. K-NN in descriptor space (self-match included) ---------- */
+  cv::BFMatcher matcher(normType, /*crossCheck=*/false);
+  std::vector<std::vector<cv::DMatch>> knnMatches;
+  matcher.knnMatch(descriptors, descriptors, knnMatches, k + 1);  // +1 for self
+
+  /* ---------- 2. filter by mask, per-kp descriptor gate, pixel gate ---------- */
+  for (int i = 0; i < N; ++i) {
+    if (!useMask.at<uchar>(i))  // kp i isn't part of the subset
+      continue;
+
+    const float descGate_i = maxDescDistVec[i];
+    const cv::Point2f pi = keypoints.at<cv::Point2f>(i);
+
+    for (const auto& m : knnMatches[i]) {
+      const int j = m.trainIdx;
+      if (j == i)  // skip self
+        continue;
+      if (!useMask.at<uchar>(j))  // neighbour not in subset
+        continue;
+      if (m.distance > descGate_i)  // exceeds kp-specific descriptor gate
+        continue;
+
+      const cv::Point2f pj = keypoints.at<cv::Point2f>(j);
+      if (cv::norm(pi - pj) > maxPixDist) continue;
+
+      neighbours[i].push_back(j);
+    }
+  }
+}
 
 static constexpr bool kDrawHeatmap = true;
 
 int main(int argc, char* argv[]) {
   std::filesystem::path image_folder((argc > 1) ? argv[1] : "image");
-  std::filesystem::path image1_path = image_folder / "sample1.png";
-  std::filesystem::path image2_path = image_folder / "sample2.png";
+  std::filesystem::path image1_path = image_folder / "sample1.jpg";
+  std::filesystem::path image2_path = image_folder / "sample2.jpg";
 
-  const std::string image_resolution = "640x352";
-  constexpr int max_kpts = 500;  // Default maximum keypoints to detect
+  const std::string image_resolution = "640x480";
+  constexpr int max_kpts = 2000;  // Default maximum keypoints to detect
 
   std::filesystem::path xfeat_model_folder = (argc > 2) ? argv[2] : "onnx_model";
   std::filesystem::path xfeat_model_path = xfeat_model_folder / ("xfeat_" + image_resolution + ".onnx");
@@ -37,8 +124,6 @@ int main(int argc, char* argv[]) {
   const int matcher_type_int = (argc > 4) ? std::stoi(argv[4]) : static_cast<int>(MatcherType::BF);
   std::cout << "Using matcher type: " << matcher_type_int << std::endl;
 
-  auto matcher_type = static_cast<MatcherType>(matcher_type_int);
-
   cv::Mat image1 = cv::imread(image1_path, cv::IMREAD_GRAYSCALE);
   cv::Mat image2 = cv::imread(image2_path, cv::IMREAD_GRAYSCALE);
 
@@ -49,7 +134,9 @@ int main(int argc, char* argv[]) {
 
   try {
     Ort::Env env(ORT_LOGGING_LEVEL_WARNING, "xfeat-shared-env");
-    auto lighterglue_model = std::make_unique<LighterGlueOnnx>(env, lighterglue_model_path.string(), true);
+    auto lighterglue = std::make_unique<LighterGlueOnnx>(env, lighterglue_model_path.string(),
+                                                         true);  // Use GPU
+
     XFeatONNX xfeat_onnx(env,
                          XFeatONNX::Params{
                              .xfeat_path = xfeat_model_path.string(),
@@ -57,22 +144,61 @@ int main(int argc, char* argv[]) {
                              .interp_bicubic_path = interp_bicubic_path.string(),
                              .interp_nearest_path = interp_nearest_path.string(),
                              .use_gpu = true,
-                             .matcher_type = matcher_type,
+                             .nkpts = max_kpts,
+                             .matcher_type = MatcherType::GPU_BF,
                          },
-                         std::move(lighterglue_model));
+                         std::move(lighterglue));
 
-    xfeat_onnx.match(image1, image2, max_kpts);
+    // warm up the model
+    auto result1 = xfeat_onnx.detect_and_compute(image1, max_kpts, nullptr, {}, {}, nullptr);
+    auto result2 = xfeat_onnx.detect_and_compute(image2, max_kpts, nullptr, {}, {}, nullptr);
+    xfeat_onnx.match(result1, result2, image1, min_cos, nullptr);
 
     auto start = std::chrono::high_resolution_clock::now();
     TimingStats timing_stats;
     cv::Mat heatmap1, heatmap2;
-    auto result1 = xfeat_onnx.detect_and_compute(image1, max_kpts, &heatmap1);
-    auto result2 = xfeat_onnx.detect_and_compute(image2, max_kpts, &heatmap2);
-    auto [mkpts0, mkpts1, kpts1, kpts2] = xfeat_onnx.match(result1, result2, image1, min_cos, &timing_stats);
+    std::vector<cv::Vec2d> std1;
+    std::vector<cv::Vec2d> std2;
+    result1 = xfeat_onnx.detect_and_compute(image1, max_kpts, &heatmap1, {}, {}, &std1);
+    result2 = xfeat_onnx.detect_and_compute(image2, max_kpts, &heatmap2, {}, {}, &std2);
     auto end = std::chrono::high_resolution_clock::now();
     std::chrono::duration<double, std::milli> duration = end - start;
-    std::cout << "xfeat_onnx detection+match+RANSAC on 2 images (size: " << image1.cols << "x" << image1.rows
-              << ") took " << duration.count() << "ms." << std::endl;
+    std::cout << "xfeat_onnx detection on 2 images (size: " << image1.cols << "x" << image1.rows << ") took "
+              << duration.count() << "ms." << std::endl;
+    std::vector<std::vector<int>> self_neighbours1, self_neighbours2;
+
+    std::vector<cv::DMatch> matches;
+    // lighterglue->match(result1, image1.size(), result2, image2.size(), matches);
+
+    xfeat::TimingStats match_timing_stats;
+    auto [mkpts1, mkpts2, kpts1, kpts2] = xfeat_onnx.match(result1, result2, image1, -1000, &match_timing_stats);
+    for (int i = 0; i < mkpts1.rows; ++i) {
+      matches.push_back(cv::DMatch(i, i, 0));
+    }
+    for (auto stats : match_timing_stats) {
+      std::cout << "Match timing stats: " << stats.first << ": " << stats.second << " ms" << std::endl;
+    }
+    // cv::Mat mask0(result1.keypoints.rows, 1, CV_8U, cv::Scalar(0));
+    // cv::Mat mask1(result2.keypoints.rows, 1, CV_8U, cv::Scalar(0));
+    // cv::Mat matched_dist0(result1.keypoints.rows, 1, CV_32F, cv::Scalar(0));
+    // cv::Mat matched_dist1(result2.keypoints.rows, 1, CV_32F, cv::Scalar(0));
+    // // set all mask to 0
+    // for (const auto& match : matches) {
+    //   mask0.at<uchar>(match.queryIdx) = 1;
+    //   mask1.at<uchar>(match.trainIdx) = 1;
+
+    //   auto desc1 = result1.descriptors.row(match.queryIdx);
+    //   auto desc2 = result2.descriptors.row(match.trainIdx);
+
+    //   float dist = cv::norm(desc1, desc2, cv::NORM_L2);
+
+    //   matched_dist0.at<float>(match.queryIdx) = dist * 1.2;
+    //   matched_dist1.at<float>(match.trainIdx) = dist * 1.2;
+    // }
+
+    // // Find similar neighbours for both results
+    // findSimilarNeighbours(result1.keypoints, result1.descriptors, self_neighbours1, matched_dist0, mask0, 3, 128);
+    // findSimilarNeighbours(result2.keypoints, result2.descriptors, self_neighbours2, matched_dist1, mask1, 3, 128);
 
     // print timing stats
     std::cout << "Timing Stats:" << std::endl;
@@ -81,21 +207,39 @@ int main(int argc, char* argv[]) {
     }
 
     // Draw matches using OpenCV's drawMatches
-    if (!mkpts0.empty() && !mkpts1.empty()) {
+    if (not matches.empty()) {
       cv::Mat img1 = cv::imread(image1_path, cv::IMREAD_COLOR);
       cv::Mat img2 = cv::imread(image2_path, cv::IMREAD_COLOR);
-      std::vector<cv::KeyPoint> kpts1, kpts2;
-      for (int i = 0; i < mkpts0.rows; ++i) {
-        kpts1.emplace_back(mkpts0.at<float>(i, 0), mkpts0.at<float>(i, 1), 1.f);
-        kpts2.emplace_back(mkpts1.at<float>(i, 0), mkpts1.at<float>(i, 1), 1.f);
+
+      // draw self matches
+      for (size_t i = 0; i < self_neighbours1.size(); ++i) {
+        for (int j : self_neighbours1[i]) {
+          cv::line(img1,
+                   result1.keypoints.at<cv::Point2f>(i),
+                   result1.keypoints.at<cv::Point2f>(j),
+                   cv::Scalar(255, 255, 0),
+                   1);
+        }
       }
-      // Create DMatch vector (1-to-1)
-      std::vector<cv::DMatch> matches;
-      for (int i = 0; i < mkpts0.rows; ++i) {
-        matches.emplace_back(i, i, 0.f);
+      for (size_t i = 0; i < self_neighbours2.size(); ++i) {
+        for (int j : self_neighbours2[i]) {
+          cv::line(img2,
+                   result2.keypoints.at<cv::Point2f>(i),
+                   result2.keypoints.at<cv::Point2f>(j),
+                   cv::Scalar(255, 255, 0),
+                   1);
+        }
       }
+
       std::cout << "Number of matches: " << matches.size() << std::endl;
       cv::Mat out_img;
+
+      std::vector<cv::KeyPoint> kpts1, kpts2;
+      for (int i = 0; i < mkpts1.rows; ++i) {
+        kpts1.push_back({mkpts1.at<cv::Point2f>(i), 1});
+        kpts2.push_back({mkpts2.at<cv::Point2f>(i), 1});
+      }
+
       cv::drawMatches(img1,
                       kpts1,
                       img2,
@@ -106,6 +250,17 @@ int main(int argc, char* argv[]) {
                       cv::Scalar::all(-1),
                       std::vector<char>(),
                       cv::DrawMatchesFlags::NOT_DRAW_SINGLE_POINTS);
+      cv::Mat track_img = img2.clone();
+      // Draw lines for each match
+      for (auto match : matches) {
+        const cv::Point2f& pt1 = kpts1[match.queryIdx].pt;
+        const cv::Point2f& pt2 = kpts2[match.trainIdx].pt;
+        cv::line(track_img, pt1, pt2, cv::Scalar(0, 255, 0), 2);
+        // Optionally, draw circles at keypoints
+        cv::circle(track_img, pt1, 4, cv::Scalar(0, 0, 255), -1);
+        cv::circle(track_img, pt2, 4, cv::Scalar(255, 0, 0), -1);
+      }
+      cv::imshow("track_img", track_img);
 
       // draw the heatmap
       if (!heatmap1.empty() and !heatmap2.empty() and kDrawHeatmap) {
@@ -123,52 +278,32 @@ int main(int argc, char* argv[]) {
         // Concatenate the two heatmaps to match out_img size
         cv::Mat heatmap_combined;
         cv::hconcat(heatmap1_colored, heatmap2_colored, heatmap_combined);
-        // Ensure heatmap_combined and out_img have the same size
-        if (heatmap_combined.size() == out_img.size()) {
-          cv::addWeighted(out_img, 0.5, heatmap_combined, 0.5, 0.0, out_img);
-        } else {
-          std::cerr << "Heatmap and output image sizes do not match!" << std::endl;
-        }
-
-        // Draw keypoints on the heatmap
-        for (const auto& kp : kpts1) {
-          cv::circle(out_img, kp.pt, 5, cv::Scalar(0, 255, 0), -1);
-        }
-        for (const auto& kp : kpts2) {
-          cv::circle(out_img, kp.pt + cv::Point2f(img1.cols, 0), 5, cv::Scalar(0, 255, 0), -1);
-        }
-
-        auto t0_std = std::chrono::high_resolution_clock::now();
-        cv::Mat debug_hm;
-        auto std1 = computeUncertaintySobel(heatmap1, kpts1, 1e-2, 1e-12, &debug_hm);
-
-        auto t1_std = std::chrono::high_resolution_clock::now();
-        auto std2 = computeUncertaintySobel(heatmap2, kpts2, 1e-2, 1e-12, nullptr);
-        std::cout << "Computed keypoint standard deviations in "
-                  << std::chrono::duration<double, std::milli>(t1_std - t0_std).count() << " ms." << std::endl;
 
         // draw the two heatmap sides by side
         cv::imshow("Heatmap", heatmap_combined);
 
-        cv::imshow("debug heatmap", debug_hm);
-
-        // print the std
-        std::cout << "Keypoint uncertainties (std):" << std::endl;
-        for (size_t i = 0; i < std1.size(); ++i) {
-          std::cout << std1.at(i) << " ";
-        }
-
-        std::cout << std::endl;
-        for (size_t i = 0; i < std2.size(); ++i) {
-          std::cout << std2.at(i) << " ";
-        }
-        std::cout << std::endl;
-
         // plot the keypoints with uncertainties
-        for (size_t i = 0; i < kpts1.size(); ++i) {
-          cv::circle(out_img, kpts1[i].pt, static_cast<int>(std1[i][0]), cv::Scalar(255, 0, 0), 1);
-          cv::circle(
-              out_img, kpts2[i].pt + cv::Point2f(img1.cols, 0), static_cast<int>(std2[i][0]), cv::Scalar(255, 0, 0), 1);
+        for (auto match : matches) {
+          const cv::Point2f& pt1 = result1.keypoints.at<cv::Point2f>(match.queryIdx);
+          const cv::Point2f& pt2 = result2.keypoints.at<cv::Point2f>(match.trainIdx) + cv::Point2f(img1.cols, 0);
+          // draw keypoints
+          // draw eclipse for uncertainty
+          // cv::ellipse(out_img,
+          //             pt1,
+          //             cv::Size(static_cast<int>(std1[match.queryIdx][0]), static_cast<int>(std1[match.queryIdx][1])),
+          //             0,
+          //             0,
+          //             360,
+          //             cv::Scalar(0, 255, 0, 50),
+          //             1);
+          // cv::ellipse(out_img,
+          //             pt2,
+          //             cv::Size(static_cast<int>(std2[match.trainIdx][0]), static_cast<int>(std2[match.trainIdx][1])),
+          //             0,
+          //             0,
+          //             360,
+          //             cv::Scalar(0, 255, 0, 50),
+          //             1);
         }
       }
 

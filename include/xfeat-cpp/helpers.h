@@ -185,7 +185,8 @@ inline std::vector<cv::Vec2d> computeUncertaintySobel(const cv::Mat& heatmap,
                                                       cv::Mat* debug = nullptr) {
   CV_Assert(heatmap.type() == CV_32F || heatmap.type() == CV_64F);
 
-  static constexpr double kMaxStd = 8 * 1.5;
+  static constexpr double kMaxStd = 12;
+  static constexpr double kMinStd = 4;
 
   // 0) Max-pool via dilation with 8×8 structuring element
   cv::Mat pooled;
@@ -245,6 +246,7 @@ inline std::vector<cv::Vec2d> computeUncertaintySobel(const cv::Mat& heatmap,
       double gy = gradY.at<double>(v, u);
       double gmag = std::sqrt(gx * gx + gy * gy);
       double iso = (gmag > eps ? 1.0 / gmag : kMaxStd);
+      iso = std::clamp(iso, kMinStd, kMaxStd);
       sigmas.emplace_back(iso, iso);
       continue;
     }
@@ -258,8 +260,10 @@ inline std::vector<cv::Vec2d> computeUncertaintySobel(const cv::Mat& heatmap,
     double vyy_cov = cov.at<double>(1, 1);
     double sx = (vxx_cov > 0 && std::isfinite(vxx_cov)) ? std::sqrt(vxx_cov) : 1;
     double sy = (vyy_cov > 0 && std::isfinite(vyy_cov)) ? std::sqrt(vyy_cov) : 1;
+    sx = std::clamp(sx * kMaxStd, kMinStd, kMaxStd);
+    sy = std::clamp(sy * kMaxStd, kMinStd, kMaxStd);
 
-    sigmas.emplace_back(sx * kMaxStd, sy * kMaxStd);
+    sigmas.emplace_back(sx, sy);
   }
 
   return sigmas;
