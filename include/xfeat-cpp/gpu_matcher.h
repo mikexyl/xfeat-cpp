@@ -27,9 +27,14 @@ class CuMatcher {
                       std::vector<int>& bestIdx,
                       std::vector<float>& bestScore);
 
-  std::tuple<std::vector<int>, std::vector<int>> match_mkpts(const cv::Mat& desc1,
-                                                             const cv::Mat& desc2,
-                                                             float min_cossim);
+  std::vector<std::vector<int>> match_mkpts(const cv::Mat& desc1, const cv::Mat& desc2, float min_cossim);
+
+  std::tuple<std::vector<int>, std::vector<int>> match_mkpts_local(const cv::Mat& desc1,
+                                                                   const cv::Mat& desc2,
+                                                                   const std::vector<cv::Point2f>& kp1,
+                                                                   const std::vector<cv::Point2f>& kp2,
+                                                                   float search_radius,
+                                                                   float min_cossim = 0.f);
 
  private:
   float *d_scores = nullptr, *d_A = nullptr, *d_B = nullptr;

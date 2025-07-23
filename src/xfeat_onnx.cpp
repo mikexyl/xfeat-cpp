@@ -9,6 +9,7 @@
 #include <opencv2/calib3d.hpp>
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
+#include <set>
 
 #include "xfeat-cpp/helpers.h"
 
@@ -509,9 +510,9 @@ DetectionResult XFeatONNX::detect_and_compute(Ort::Session& session,
 }
 
 // match_mkpts: rewritten to match the logic of the Python version
-std::tuple<std::vector<int>, std::vector<int>> XFeatONNX::match_mkpts_bf(const cv::Mat& feats1,
-                                                                         const cv::Mat& feats2,
-                                                                         float min_cossim) {
+std::vector<std::vector<int>> XFeatONNX::match_mkpts_bf(const cv::Mat& feats1,
+                                                        const cv::Mat& feats2,
+                                                        float min_cossim) {
   int N1 = feats1.rows;
   int N2 = feats2.rows;
   auto t0 = std::chrono::high_resolution_clock::now();
@@ -542,7 +543,7 @@ std::tuple<std::vector<int>, std::vector<int>> XFeatONNX::match_mkpts_bf(const c
     match21[i] = maxLoc.x;
   });
 
-  std::vector<int> idx0, idx1;
+  std::vector<std::vector<int>> idx(feats1.rows, std::vector<int>{});
   tbb::mutex idx_mutex;
   tbb::parallel_for(0, N1, [&](int i) {
     int j = match12[i];
@@ -557,26 +558,24 @@ std::tuple<std::vector<int>, std::vector<int>> XFeatONNX::match_mkpts_bf(const c
         }
         if (max_cossim > min_cossim) {
           tbb::mutex::scoped_lock lock(idx_mutex);
-          idx0.push_back(i);
-          idx1.push_back(j);
+          idx[i].push_back(j);
         }
       } else {
         tbb::mutex::scoped_lock lock(idx_mutex);
-        idx0.push_back(i);
-        idx1.push_back(j);
+        idx[i].push_back(j);
       }
     }
   });
-  return {idx0, idx1};
+  return idx;
 }
 
-std::tuple<cv::Mat, cv::Mat, cv::Mat, cv::Mat> XFeatONNX::match(cv::Mat image1,
-                                                                cv::Mat image2,
-                                                                int top_k,
-                                                                float min_cossim,
-                                                                cv::Mat* heatmap1,
-                                                                cv::Mat* heatmap2,
-                                                                TimingStats* timing_stats) {
+std::vector<cv::DMatch> XFeatONNX::match(cv::Mat image1,
+                                         cv::Mat image2,
+                                         int top_k,
+                                         float min_cossim,
+                                         cv::Mat* heatmap1,
+                                         cv::Mat* heatmap2,
+                                         TimingStats* timing_stats) {
   auto t0 = std::chrono::high_resolution_clock::now();
   auto result1 = detect_and_compute(xfeat_session_, image1, top_k, heatmap1);
   auto t1 = std::chrono::high_resolution_clock::now();
@@ -601,34 +600,41 @@ std::tuple<cv::Mat, cv::Mat, cv::Mat, cv::Mat> XFeatONNX::match(cv::Mat image1,
 }
 
 // Overload: match using DetectionResult directly
-std::tuple<cv::Mat, cv::Mat, cv::Mat, cv::Mat> XFeatONNX::match(const DetectionResult& result1,
-                                                                const DetectionResult& result2,
-                                                                cv::Mat image1,
-                                                                float min_sim,
-                                                                TimingStats* timing_stats) {
+std::vector<cv::DMatch> XFeatONNX::match(const DetectionResult& result1,
+                                         const DetectionResult& result2,
+                                         cv::Mat image1,
+                                         float min_sim,
+                                         TimingStats* timing_stats) {
   if (result1.keypoints.empty() || result2.keypoints.empty()) {
     std::cerr << "Detection failed for one or both DetectionResults." << std::endl;
     return {};
   }
 
-  std::vector<int> indexes1, indexes2;
+  std::vector<std::vector<int>> indexes;
   std::vector<int> best_index;
   std::vector<float> best_scores;
-  std::vector<cv::KeyPoint> keypoints1, keypoints2;
+
+  std::vector<cv::Point2f> keypoints1, keypoints2;
+  for (int i = 0; i < result1.keypoints.rows; ++i) {
+    keypoints1.emplace_back(result1.keypoints.at<float>(i, 0), result1.keypoints.at<float>(i, 1));
+  }
+  for (int i = 0; i < result2.keypoints.rows; ++i) {
+    keypoints2.emplace_back(result2.keypoints.at<float>(i, 0), result2.keypoints.at<float>(i, 1));
+  }
+
   auto t0 = std::chrono::high_resolution_clock::now();
   switch (matcher_type_) {
     case MatcherType::BF:
-      std::tie(indexes1, indexes2) = match_mkpts_bf(result1.descriptors, result2.descriptors, min_sim);
+      indexes = match_mkpts_bf(result1.descriptors, result2.descriptors, min_sim);
       break;
     case MatcherType::FLANN:
-      std::tie(indexes1, indexes2) = match_mkpts_flann(result1.descriptors, result2.descriptors, min_sim);
+      indexes = match_mkpts_flann(result1.descriptors, result2.descriptors, min_sim);
       break;
     case MatcherType::GPU_BF:
       if (!gpu_matcher_) {
         throw std::runtime_error("GPU BF matcher is not initialized.");
       }
-      std::tie(indexes1, indexes2) = gpu_matcher_->match_mkpts(result1.descriptors, result2.descriptors, min_sim);
-      std::cout << "GPU BF matcher found " << indexes1.size() << " matches." << std::endl;
+      indexes = gpu_matcher_->match_mkpts(result1.descriptors, result2.descriptors, min_sim);
       break;
     case MatcherType::LIGHTERGLUE:
       if (!lighterglue_) {
@@ -636,7 +642,7 @@ std::tuple<cv::Mat, cv::Mat, cv::Mat, cv::Mat> XFeatONNX::match(const DetectionR
       }
       std::array<float, 2> image_size0{static_cast<float>(input_width_), static_cast<float>(input_height_)};
       std::array<float, 2> image_size1{static_cast<float>(input_width_), static_cast<float>(input_height_)};
-      std::tie(indexes1, indexes2) = lighterglue_->match(result1, image_size0, result2, image_size1, min_sim);
+      indexes = lighterglue_->match(result1, image_size0, result2, image_size1, min_sim);
       break;
   }
 
@@ -646,62 +652,89 @@ std::tuple<cv::Mat, cv::Mat, cv::Mat, cv::Mat> XFeatONNX::match(const DetectionR
     (*timing_stats)["match_mkpts"] = std::chrono::duration<double, std::milli>(t1 - t0).count();
   }
 
+  int num_matched =
+      std::count_if(indexes.begin(), indexes.end(), [](const std::vector<int>& idx) { return !idx.empty(); });
+
   t0 = std::chrono::high_resolution_clock::now();
   // Select matched keypoints
-  cv::Mat mkpts0(indexes1.size(), 2, CV_32F);
-  cv::Mat mkpts1(indexes2.size(), 2, CV_32F);
-  for (size_t i = 0; i < indexes1.size(); ++i) {
-    mkpts0.at<float>(i, 0) = result1.keypoints.at<float>(indexes1[i], 0);
-    mkpts0.at<float>(i, 1) = result1.keypoints.at<float>(indexes1[i], 1);
-    mkpts1.at<float>(i, 0) = result2.keypoints.at<float>(indexes2[i], 0);
-    mkpts1.at<float>(i, 1) = result2.keypoints.at<float>(indexes2[i], 1);
+  std::vector<int> matched_indices1, matched_indices2;
+  cv::Mat mkpts1(num_matched, 2, CV_32F);
+  cv::Mat mkpts2(num_matched, 2, CV_32F);
+  std::set<int> matched_indices2_set;
+  std::cout << "Number of matched keypoints: " << num_matched << std::endl;
+  for (size_t i = 0; i < indexes.size(); ++i) {
+    if (indexes[i].empty()) {
+      continue;
+    }
+    matched_indices2_set.insert(indexes[i].begin(), indexes[i].end());
+    if (indexes[i].size() > 1) {
+      throw std::runtime_error("Multiple matches found for a single keypoint, which is not supported.");
+    }
+    // Take the first match
+    int j = indexes[i][0];
+    if (j < 0 || j >= result2.keypoints.rows) {
+      continue;  // Invalid index
+    }
+    mkpts1.at<float>(i, 0) = result1.keypoints.at<float>(i, 0);
+    mkpts1.at<float>(i, 1) = result1.keypoints.at<float>(i, 1);
+    mkpts2.at<float>(i, 0) = result2.keypoints.at<float>(j, 0);
+    mkpts2.at<float>(i, 1) = result2.keypoints.at<float>(j, 1);
+    matched_indices1.push_back(i);
+    matched_indices2.push_back(j);
   }
 
   // Filter matches using homography (RANSAC)
+  cv::Mat H;
+  auto inliers = calc_warp_corners_and_matches(mkpts1, mkpts2, image1, &H);
+
+  std::vector<int> inlier_indices1, inlier_indices2;
+  for (size_t i = 0; i < inliers.size(); ++i) {
+    if (inliers[i] > 0) {  // Inlier
+      inlier_indices1.push_back(matched_indices1[i]);
+      inlier_indices2.push_back(matched_indices2[i]);
+    }
+  }
+
   std::vector<cv::DMatch> matches;
-  std::tie(keypoints1, keypoints2, matches) = calc_warp_corners_and_matches(mkpts0, mkpts1, image1);
+  if (not H.empty() and matcher_type_ == MatcherType::GPU_BF) {
+    std::cout << "Rematching unmatched keypoints using GPU matcher." << std::endl;
+    std::vector<cv::Point2f> kpts1_warped;
+    cv::perspectiveTransform(keypoints1, kpts1_warped, H);
+    auto [rematch_id1, rematch_id2] = gpu_matcher_->match_mkpts_local(
+        result1.descriptors, result2.descriptors, kpts1_warped, keypoints2, 5, min_sim * 0.6);
 
-  // Convert filtered keypoints back to cv::Mat for return
-  cv::Mat filtered_mkpts0((int)matches.size(), 2, CV_32F);
-  cv::Mat filtered_mkpts1((int)matches.size(), 2, CV_32F);
-  for (size_t i = 0; i < matches.size(); ++i) {
-    filtered_mkpts0.at<float>(i, 0) = keypoints1[i].pt.x;
-    filtered_mkpts0.at<float>(i, 1) = keypoints1[i].pt.y;
-    filtered_mkpts1.at<float>(i, 0) = keypoints2[i].pt.x;
-    filtered_mkpts1.at<float>(i, 1) = keypoints2[i].pt.y;
-  }
-  auto t2 = std::chrono::high_resolution_clock::now();
-  if (timing_stats) {
-    (*timing_stats)["calc_warp_corners"] = std::chrono::duration<double, std::milli>(t2 - t0).count();
+    for (int i = 0; i < rematch_id1.size(); ++i) {
+      if (rematch_id1[i] >= 0 && rematch_id2[i] >= 0) {
+        matches.emplace_back(rematch_id1[i], rematch_id2[i], 0.0f);
+      }
+    }
   }
 
-  return std::make_tuple(filtered_mkpts0, filtered_mkpts1, result1.keypoints, result2.keypoints);
+  return matches;
 }
 
 // Calculate warped corners and matches using homography (like the Python
 // version)
-std::tuple<std::vector<cv::KeyPoint>, std::vector<cv::KeyPoint>, std::vector<cv::DMatch>>
-XFeatONNX::calc_warp_corners_and_matches(const cv::Mat& ref_points, const cv::Mat& dst_points, const cv::Mat& image1) {
+std::vector<int> XFeatONNX::calc_warp_corners_and_matches(const cv::Mat& ref_points,
+                                                          const cv::Mat& dst_points,
+                                                          const cv::Mat& image1,
+                                                          cv::Mat* H) {
   // Compute homography (use cv::RANSAC as int for compatibility)
   cv::Mat mask;
-  cv::Mat H = cv::findHomography(ref_points, dst_points, cv::RANSAC, 3.5, mask, 200, 0.9);
-  if (H.empty()) {
+  *H = cv::findHomography(ref_points, dst_points, cv::RANSAC, 3.5, mask, 200, 0.9);
+  if (H->empty()) {
     std::cerr << "Homography estimation failed." << std::endl;
     return {};
   }
   mask = mask.reshape(1, mask.total());
 
-  // Prepare keypoints and matches
-  std::vector<cv::KeyPoint> keypoints1, keypoints2;
-  std::vector<cv::DMatch> matches;
-  for (int i = 0; i < ref_points.rows; ++i) {
-    if (mask.at<uchar>(i)) {
-      keypoints1.emplace_back(ref_points.at<float>(i, 0), ref_points.at<float>(i, 1), 5);
-      keypoints2.emplace_back(dst_points.at<float>(i, 0), dst_points.at<float>(i, 1), 5);
-      matches.emplace_back(i, i, 0);
+  std::vector<int> inliers(ref_points.rows, 0);
+  for (int i = 0; i < mask.rows; ++i) {
+    if (mask.at<uchar>(i, 0) > 0) {
+      inliers[i] = 1;  // Mark as inlier
     }
   }
-  return {keypoints1, keypoints2, matches};
+  return inliers;  // Return inliers as a vector of 0s and 1s
 }
 
 DetectionResult XFeatONNX::detect_and_compute(cv::Mat image,
@@ -713,9 +746,9 @@ DetectionResult XFeatONNX::detect_and_compute(cv::Mat image,
   return detect_and_compute(xfeat_session_, image, top_k, heatmap, M1, x_prep, std);
 }
 
-std::tuple<std::vector<int>, std::vector<int>> XFeatONNX::match_mkpts_flann(const cv::Mat& feats1,
-                                                                            const cv::Mat& feats2,
-                                                                            float min_cossim) {
+std::vector<std::vector<int>> XFeatONNX::match_mkpts_flann(const cv::Mat& feats1,
+                                                           const cv::Mat& feats2,
+                                                           float min_cossim) {
   // Implementation using FLANN matcher with mutual nearest neighbor and min_cossim threshold
   cv::Mat desc1 = feats1;
   if (desc1.type() != CV_32F) desc1.convertTo(desc1, CV_32F);
@@ -729,9 +762,7 @@ std::tuple<std::vector<int>, std::vector<int>> XFeatONNX::match_mkpts_flann(cons
   std::vector<cv::DMatch> matches21;
   matcher.match(desc2, desc1, matches21);
 
-  std::vector<int> idx0, idx1;
-  idx0.reserve(matches12.size());
-  idx1.reserve(matches12.size());
+  std::vector<std::vector<int>> idx(desc1.rows, std::vector<int>{});
 
   // Convert min_cossim to a distance threshold
   float maxDist = 0.0f;
@@ -746,16 +777,14 @@ std::tuple<std::vector<int>, std::vector<int>> XFeatONNX::match_mkpts_flann(cons
       float dist = matches12[i].distance;
       if (min_cossim > 0.0f) {
         if (dist <= maxDist) {
-          idx0.push_back((int)i);
-          idx1.push_back(j);
+          idx[matches12[i].queryIdx].push_back(matches12[i].trainIdx);
         }
       } else {
-        idx0.push_back((int)i);
-        idx1.push_back(j);
+        idx[matches12[i].queryIdx].push_back(matches12[i].trainIdx);
       }
     }
   }
-  return {idx0, idx1};
+  return idx;
 }
 
 XFeatONNX::XFeatONNX(Ort::Env& env, const Params& params, std::unique_ptr<LighterGlueOnnx> lighterglue)

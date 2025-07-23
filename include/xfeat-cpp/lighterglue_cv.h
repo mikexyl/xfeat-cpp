@@ -49,15 +49,11 @@ class LighterGlueCV {
 
     std::array<float, 2> size0 = {static_cast<float>(image0_size.width), static_cast<float>(image0_size.height)};
     std::array<float, 2> size1 = {static_cast<float>(image1_size.width), static_cast<float>(image1_size.height)};
-    auto result = matcher_.match(query_det, size0, train_det, size1, min_score_);
-    const auto& idx0 = std::get<0>(result);
-    const auto& idx1 = std::get<1>(result);
+    auto indexes = matcher_.match(query_det, size0, train_det, size1, min_score_);
     matches.clear();
-    for (size_t i = 0; i < idx0.size(); ++i) {
-      cv::DMatch match;
-      match.queryIdx = idx0[i];
-      match.trainIdx = idx1[i];
-      matches.emplace_back(match);
+    for (size_t i = 0; i < indexes.size(); ++i) {
+      if (indexes[i].empty()) continue;                       // No matches for this keypoint
+      matches.emplace_back(cv::DMatch(i, indexes[i][0], 0));  // Use first match only
     }
   }
 

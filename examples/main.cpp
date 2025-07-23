@@ -23,7 +23,6 @@ using namespace xfeat;
  * @param maxDescDist   Hamming (for CV_8U) or L2 (for CV_32F) threshold.
  * @param maxPixDist    Maximum pixel distance between keypoints to be considered neighbours.
  */
-#pragma once
 #include <opencv2/opencv.hpp>
 #include <vector>
 
@@ -167,14 +166,11 @@ int main(int argc, char* argv[]) {
               << duration.count() << "ms." << std::endl;
     std::vector<std::vector<int>> self_neighbours1, self_neighbours2;
 
-    std::vector<cv::DMatch> matches;
     // lighterglue->match(result1, image1.size(), result2, image2.size(), matches);
 
     xfeat::TimingStats match_timing_stats;
-    auto [mkpts1, mkpts2, kpts1, kpts2] = xfeat_onnx.match(result1, result2, image1, -1000, &match_timing_stats);
-    for (int i = 0; i < mkpts1.rows; ++i) {
-      matches.push_back(cv::DMatch(i, i, 0));
-    }
+    auto matches = xfeat_onnx.match(result1, result2, image1, -1000, &match_timing_stats);
+
     for (auto stats : match_timing_stats) {
       std::cout << "Match timing stats: " << stats.first << ": " << stats.second << " ms" << std::endl;
     }
@@ -235,9 +231,11 @@ int main(int argc, char* argv[]) {
       cv::Mat out_img;
 
       std::vector<cv::KeyPoint> kpts1, kpts2;
-      for (int i = 0; i < mkpts1.rows; ++i) {
-        kpts1.push_back({mkpts1.at<cv::Point2f>(i), 1});
-        kpts2.push_back({mkpts2.at<cv::Point2f>(i), 1});
+      for (int i = 0; i < result1.keypoints.rows; ++i) {
+        kpts1.emplace_back(result1.keypoints.at<cv::Point2f>(i), 1);
+      }
+      for (int i = 0; i < result2.keypoints.rows; ++i) {
+        kpts2.emplace_back(result2.keypoints.at<cv::Point2f>(i), 1);
       }
 
       cv::drawMatches(img1,

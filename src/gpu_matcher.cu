@@ -183,9 +183,9 @@ __global__ void argmaxKernelCols(const float* scores,  // column‑major N1×N2
   }
 }
 
-std::tuple<std::vector<int>, std::vector<int>> CuMatcher::match_mkpts(const cv::Mat& desc1,
-                                                                      const cv::Mat& desc2,
-                                                                      float min_cossim)  // ≥0 ⇒ apply threshold
+std::vector<std::vector<int>> CuMatcher::match_mkpts(const cv::Mat& desc1,
+                                                     const cv::Mat& desc2,
+                                                     float min_cossim)  // ≥0 ⇒ apply threshold
 {
   const int N1 = desc1.rows, N2 = desc2.rows, D = desc1.cols;
   CV_Assert(desc1.type() == CV_32F && desc2.type() == CV_32F && D == desc2.cols);
@@ -209,60 +209,139 @@ std::tuple<std::vector<int>, std::vector<int>> CuMatcher::match_mkpts(const cv::
   const int threads = 256;
   const size_t smem = threads * (sizeof(float) + sizeof(int));
 
-  // We'll reuse the same kernel twice: once across rows, once across columns.
-  // First pass – per‑row arg‑max
-  argmaxKernelRows<<<N1, threads, smem>>>(d_scores,  // M = N1 rows
-                                          d_bestIdxRow,
-                                          d_bestScoreRow,
+  // --- row‑wise arg‑max (unchanged) -----------------------------------------
+  argmaxKernelRows<<<N1, threads, smem>>>(d_scores,
+                                          d_bestIdxRow,    // row2col
+                                          d_bestScoreRow,  // rowBest
                                           N1,
                                           N2);
-  CUDA_CHECK(cudaGetLastError());
 
-  // -----------------------------------------------------------------------
-  // 4. Best‑of‑COLUMN  (for each j∈[0,N2) find i* and score c_j)
-  //    The matrix is column‑major, so “columns” aren’t contiguous.
-  //    We launch with grid = N2; inside kernel, stride over rows.
-  // -----------------------------------------------------------------------
-  argmaxKernelCols<<<N2, threads, smem>>>(d_scores,  // read same matrix
-                                          d_bestIdxCol,
-                                          d_bestScoreCol,
+  // --- column‑wise arg‑max (needed for colBest only) ------------------------
+  argmaxKernelCols<<<N2, threads, smem>>>(d_scores,
+                                          d_bestIdxCol,    // col2row  (unused)
+                                          d_bestScoreCol,  // colBest
                                           N1,
-                                          N2);  // dims swapped inside
-  CUDA_CHECK(cudaGetLastError());
+                                          N2);
 
-  // -----------------------------------------------------------------------
-  // 5. Copy arg‑max results back
-  // -----------------------------------------------------------------------
+  // -------------------------------------------------------------------------
+  // copy results back
+  // -------------------------------------------------------------------------
   std::vector<int> row2col(N1);
   std::vector<float> rowBest(N1);
-  std::vector<int> col2row(N2);
   std::vector<float> colBest(N2);
 
   CUDA_CHECK(cudaMemcpy(row2col.data(), d_bestIdxRow, N1 * sizeof(int), cudaMemcpyDeviceToHost));
   CUDA_CHECK(cudaMemcpy(rowBest.data(), d_bestScoreRow, N1 * sizeof(float), cudaMemcpyDeviceToHost));
-
-  CUDA_CHECK(cudaMemcpy(col2row.data(), d_bestIdxCol, N2 * sizeof(int), cudaMemcpyDeviceToHost));
   CUDA_CHECK(cudaMemcpy(colBest.data(), d_bestScoreCol, N2 * sizeof(float), cudaMemcpyDeviceToHost));
 
-  // -----------------------------------------------------------------------
-  // 6. Mutual‑nearest check  +  min‑cossim threshold
-  // -----------------------------------------------------------------------
-  std::vector<int> idx0, idx1;
-  idx0.reserve(std::min(N1, N2));
-  idx1.reserve(std::min(N1, N2));
-
+  // -------------------------------------------------------------------------
+  // accept if BOTH rowBest[i] and colBest[j*] clear the threshold
+  // -------------------------------------------------------------------------
+  std::vector<std::vector<int>> idx(desc1.rows, std::vector<int>());
   for (int i = 0; i < N1; ++i) {
     const int j = row2col[i];
-    if (j < 0 || j >= N2) continue;  // safety
-
-    if (col2row[j] == i)  // mutual
-    {
-      if (min_cossim <= 0.f || rowBest[i] > min_cossim) {
-        idx0.push_back(i);
-        idx1.push_back(j);
-      }
+    if (j >= 0 && j < N2 && (min_cossim <= 0.f || (rowBest[i] > min_cossim && colBest[j] > min_cossim))) {
+      idx[i].push_back(j);
     }
   }
+  return idx;
+}
 
+// ---------------------------------------------------------------------------
+// neighbourMaskKernel.cu
+//   – column‑major similarity matrix  (N1 × N2)
+//   – zeroes out scores (sets to -FLT_MAX) when pair is outside search radius
+// ---------------------------------------------------------------------------
+__global__ void neighbourMaskKernel(float* scores,      // in/out
+                                    const float2* kp1,  // N1
+                                    const float2* kp2,  // N2
+                                    float radius2,      // r²
+                                    int N1,
+                                    int N2) {
+  int j = threadIdx.x + blockIdx.x * blockDim.x;  // column (desc2)
+  int i = blockIdx.y;                             // row    (desc1)
+  if (i >= N1 || j >= N2) return;
+
+  float2 p1 = kp1[i];
+  float2 p2 = kp2[j];
+  float dx = p1.x - p2.x;
+  float dy = p1.y - p2.y;
+  if (dx * dx + dy * dy > radius2) scores[i + j * N1] = -FLT_MAX;  // mask‑out
+}
+
+// ---------------------------------------------------------------------------
+// CuMatcher::match_mkpts_local
+//   – local (radius‑limited) GPU brute‑force matcher
+// ---------------------------------------------------------------------------
+std::tuple<std::vector<int>, std::vector<int>> CuMatcher::match_mkpts_local(const cv::Mat& desc1,
+                                                                            const cv::Mat& desc2,
+                                                                            const std::vector<cv::Point2f>& kp1,
+                                                                            const std::vector<cv::Point2f>& kp2,
+                                                                            float search_radius,  // pixels
+                                                                            float min_cossim)  // threshold (≤0 ⇒ off)
+{
+  const int N1 = desc1.rows, N2 = desc2.rows, D = desc1.cols;
+  CV_Assert(desc1.type() == CV_32F && desc2.type() == CV_32F && D == desc2.cols && kp1.size() == (size_t)N1 &&
+            kp2.size() == (size_t)N2);
+
+  // --- 1. upload descriptors --------------------------------------------
+  CUDA_CHECK(cudaMemcpy(d_A, desc1.ptr<float>(), static_cast<size_t>(N1) * D * sizeof(float), cudaMemcpyHostToDevice));
+  CUDA_CHECK(cudaMemcpy(d_B, desc2.ptr<float>(), static_cast<size_t>(N2) * D * sizeof(float), cudaMemcpyHostToDevice));
+
+  // --- 2. upload key‑point coordinates -----------------------------------
+  std::vector<float2> h_kp1(N1), h_kp2(N2);
+  for (int i = 0; i < N1; ++i) h_kp1[i] = make_float2(kp1[i].x, kp1[i].y);
+  for (int j = 0; j < N2; ++j) h_kp2[j] = make_float2(kp2[j].x, kp2[j].y);
+
+  CUDA_CHECK(cudaMemcpy(d_pred, h_kp1.data(), N1 * sizeof(float2),
+                        cudaMemcpyHostToDevice));  // reuse d_pred
+  CUDA_CHECK(cudaMemcpy(d_kp2, h_kp2.data(), N2 * sizeof(float2), cudaMemcpyHostToDevice));
+
+  // --- 3. SGEMM: cosine‑similarity matrix  (column‑major N1×N2) ----------
+  const float alpha = 1.f, beta = 0.f;
+  CUBLAS_CHECK(cublasSgemm(handle, CUBLAS_OP_T, CUBLAS_OP_N, N1, N2, D, &alpha, d_A, D, d_B, D, &beta, d_scores, N1));
+
+  // --- 4. radius mask ----------------------------------------------------
+  dim3 blk(256);
+  dim3 grd((N2 + blk.x - 1) / blk.x, N1);  // (columns, rows)
+  const float radius2 = search_radius * search_radius;
+  neighbourMaskKernel<<<grd, blk>>>(d_scores,
+                                    d_pred,  // kp1
+                                    d_kp2,   // kp2
+                                    radius2,
+                                    N1,
+                                    N2);
+  CUDA_CHECK(cudaGetLastError());
+
+  // --- 5. per‑row arg‑max (column‑major aware) ---------------------------
+  const int threads = 256;
+  const size_t smem = threads * (sizeof(float) + sizeof(int));
+  argmaxKernelRows<<<N1, threads, smem>>>(d_scores,
+                                          d_bestIdxRow,    // j*
+                                          d_bestScoreRow,  // score*
+                                          N1,
+                                          N2);
+  CUDA_CHECK(cudaGetLastError());
+
+  // --- 6. copy back + accept pairs ---------------------------------------
+  std::vector<int> row2col(N1);
+  std::vector<float> rowBest(N1);
+  CUDA_CHECK(cudaMemcpy(row2col.data(), d_bestIdxRow, N1 * sizeof(int), cudaMemcpyDeviceToHost));
+  CUDA_CHECK(cudaMemcpy(rowBest.data(), d_bestScoreRow, N1 * sizeof(float), cudaMemcpyDeviceToHost));
+
+  std::vector<int> idx0, idx1;
+  idx0.reserve(N1);
+  idx1.reserve(N1);
+
+  for (int i = 0; i < N1; ++i) {
+    int j = row2col[i];
+    float score = rowBest[i];
+
+    if (j >= 0 && j < N2 && score > -FLT_MAX / 2 &&  // not masked out
+        (min_cossim <= 0.f || score > min_cossim)) {
+      idx0.push_back(i);
+      idx1.push_back(j);
+    }
+  }
   return {std::move(idx0), std::move(idx1)};
 }

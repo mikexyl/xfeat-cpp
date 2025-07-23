@@ -42,11 +42,11 @@ class LighterGlueOnnx {
   }
 
   // Overload: match using DetectionResult for each image
-  std::tuple<std::vector<int>, std::vector<int>> match(const DetectionResult& det0,
-                                                       const std::array<float, 2>& image0_size,
-                                                       const DetectionResult& det1,
-                                                       const std::array<float, 2>& image1_size,
-                                                       float min_score = 0.5) {
+  std::vector<std::vector<int>> match(const DetectionResult& det0,
+                                      const std::array<float, 2>& image0_size,
+                                      const DetectionResult& det1,
+                                      const std::array<float, 2>& image1_size,
+                                      float min_score = 0.5) {
     // Assume det0.keypoints: CV_32FC2, det0.descriptors: CV_32FC1 or CV_32FC64
     std::vector<float> mkpts0, feats0, mkpts1, feats1;
     // Flatten keypoints and descriptors
@@ -56,13 +56,18 @@ class LighterGlueOnnx {
     feats1.assign((float*)det1.descriptors.datastart, (float*)det1.descriptors.dataend);
 
     auto [matches, scores] = match(mkpts0, feats0, image0_size, mkpts1, feats1, image1_size);
-    std::vector<int> idx0, idx1;
+    std::vector<std::vector<int>> idx(det0.keypoints.rows, std::vector<int>{});
     for (size_t i = 0; i < matches.size(); ++i) {
       if (min_score >= 0 && scores[i] < min_score) continue;  // Filter by score
-      idx0.push_back(matches[i][0]);
-      idx1.push_back(matches[i][1]);
+      int idx0 = static_cast<int>(matches[i][0]);
+      int idx1 = static_cast<int>(matches[i][1]);
+      if (idx0 >= 0 && idx0 < det0.keypoints.rows && idx1 >= 0 && idx1 < det1.keypoints.rows) {
+        idx[idx0].push_back(idx1);
+      } else {
+        std::cerr << "Warning: match index out of bounds: " << idx0 << ", " << idx1 << std::endl;
+      }
     }
-    return {idx0, idx1};
+    return idx;
   }
 
  private:

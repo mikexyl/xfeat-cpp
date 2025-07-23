@@ -224,9 +224,9 @@ int main(int argc, char* argv[]) {
     auto match_det = xfeat_onnx.detect_and_compute(match_img_gray, max_kpts);
     std::array<float, 2> match_img_size = {static_cast<float>(match_img_gray.cols),
                                            static_cast<float>(match_img_gray.rows)};
-    auto [idx0, idx1, _, __] = xfeat_onnx.match(query_det, match_det, query_img);
-    lighterglue_match_counts[match_idx] = idx0.rows;
-    std::cout << "LighterGlue matches for Faiss match " << match_idx << " (label " << idx << "): " << idx0.size()
+    auto matches = xfeat_onnx.match(query_det, match_det, query_img);
+    lighterglue_match_counts[match_idx] = matches.size();
+    std::cout << "LighterGlue matches for Faiss match " << match_idx << " (label " << idx << "): " << matches.size()
               << std::endl;
   }
 
