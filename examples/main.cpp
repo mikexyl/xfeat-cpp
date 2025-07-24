@@ -148,6 +148,9 @@ int main(int argc, char* argv[]) {
                          },
                          std::move(lighterglue));
 
+    xfeat::CuMatcher gpu_matcher;
+    gpu_matcher.init(max_kpts, max_kpts, 64);
+
     // warm up the model
     auto result1 = xfeat_onnx.detect_and_compute(image1, max_kpts, nullptr, {}, {}, nullptr);
     auto result2 = xfeat_onnx.detect_and_compute(image2, max_kpts, nullptr, {}, {}, nullptr);
@@ -169,32 +172,11 @@ int main(int argc, char* argv[]) {
     // lighterglue->match(result1, image1.size(), result2, image2.size(), matches);
 
     xfeat::TimingStats match_timing_stats;
-    auto matches = xfeat_onnx.match(result1, result2, image1, -1000, &match_timing_stats);
+    auto matches = gpu_matcher.match(result1, result2, 0.4, cv::Mat());
 
     for (auto stats : match_timing_stats) {
       std::cout << "Match timing stats: " << stats.first << ": " << stats.second << " ms" << std::endl;
     }
-    // cv::Mat mask0(result1.keypoints.rows, 1, CV_8U, cv::Scalar(0));
-    // cv::Mat mask1(result2.keypoints.rows, 1, CV_8U, cv::Scalar(0));
-    // cv::Mat matched_dist0(result1.keypoints.rows, 1, CV_32F, cv::Scalar(0));
-    // cv::Mat matched_dist1(result2.keypoints.rows, 1, CV_32F, cv::Scalar(0));
-    // // set all mask to 0
-    // for (const auto& match : matches) {
-    //   mask0.at<uchar>(match.queryIdx) = 1;
-    //   mask1.at<uchar>(match.trainIdx) = 1;
-
-    //   auto desc1 = result1.descriptors.row(match.queryIdx);
-    //   auto desc2 = result2.descriptors.row(match.trainIdx);
-
-    //   float dist = cv::norm(desc1, desc2, cv::NORM_L2);
-
-    //   matched_dist0.at<float>(match.queryIdx) = dist * 1.2;
-    //   matched_dist1.at<float>(match.trainIdx) = dist * 1.2;
-    // }
-
-    // // Find similar neighbours for both results
-    // findSimilarNeighbours(result1.keypoints, result1.descriptors, self_neighbours1, matched_dist0, mask0, 3, 128);
-    // findSimilarNeighbours(result2.keypoints, result2.descriptors, self_neighbours2, matched_dist1, mask1, 3, 128);
 
     // print timing stats
     std::cout << "Timing Stats:" << std::endl;
@@ -286,22 +268,22 @@ int main(int argc, char* argv[]) {
           const cv::Point2f& pt2 = result2.keypoints.at<cv::Point2f>(match.trainIdx) + cv::Point2f(img1.cols, 0);
           // draw keypoints
           // draw eclipse for uncertainty
-          // cv::ellipse(out_img,
-          //             pt1,
-          //             cv::Size(static_cast<int>(std1[match.queryIdx][0]), static_cast<int>(std1[match.queryIdx][1])),
-          //             0,
-          //             0,
-          //             360,
-          //             cv::Scalar(0, 255, 0, 50),
-          //             1);
-          // cv::ellipse(out_img,
-          //             pt2,
-          //             cv::Size(static_cast<int>(std2[match.trainIdx][0]), static_cast<int>(std2[match.trainIdx][1])),
-          //             0,
-          //             0,
-          //             360,
-          //             cv::Scalar(0, 255, 0, 50),
-          //             1);
+          cv::ellipse(out_img,
+                      pt1,
+                      cv::Size(static_cast<int>(std1[match.queryIdx][0]), static_cast<int>(std1[match.queryIdx][1])),
+                      0,
+                      0,
+                      360,
+                      cv::Scalar(0, 255, 0, 50),
+                      1);
+          cv::ellipse(out_img,
+                      pt2,
+                      cv::Size(static_cast<int>(std2[match.trainIdx][0]), static_cast<int>(std2[match.trainIdx][1])),
+                      0,
+                      0,
+                      360,
+                      cv::Scalar(0, 255, 0, 50),
+                      1);
         }
       }
 

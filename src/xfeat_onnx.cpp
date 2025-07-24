@@ -685,7 +685,7 @@ std::vector<cv::DMatch> XFeatONNX::match(const DetectionResult& result1,
 
   // Filter matches using homography (RANSAC)
   cv::Mat H;
-  auto inliers = calc_warp_corners_and_matches(mkpts1, mkpts2, image1, &H);
+  auto inliers = calc_warp_corners_and_matches(mkpts1, mkpts2, &H);
 
   std::vector<int> inlier_indices1, inlier_indices2;
   for (size_t i = 0; i < inliers.size(); ++i) {
@@ -710,31 +710,12 @@ std::vector<cv::DMatch> XFeatONNX::match(const DetectionResult& result1,
     }
   }
 
+  auto t2 = std::chrono::high_resolution_clock::now();
+  if (timing_stats) {
+    (*timing_stats)["match"] = std::chrono::duration<double, std::milli>(t2 - t0).count();
+  }
+
   return matches;
-}
-
-// Calculate warped corners and matches using homography (like the Python
-// version)
-std::vector<int> XFeatONNX::calc_warp_corners_and_matches(const cv::Mat& ref_points,
-                                                          const cv::Mat& dst_points,
-                                                          const cv::Mat& image1,
-                                                          cv::Mat* H) {
-  // Compute homography (use cv::RANSAC as int for compatibility)
-  cv::Mat mask;
-  *H = cv::findHomography(ref_points, dst_points, cv::RANSAC, 3.5, mask, 200, 0.9);
-  if (H->empty()) {
-    std::cerr << "Homography estimation failed." << std::endl;
-    return {};
-  }
-  mask = mask.reshape(1, mask.total());
-
-  std::vector<int> inliers(ref_points.rows, 0);
-  for (int i = 0; i < mask.rows; ++i) {
-    if (mask.at<uchar>(i, 0) > 0) {
-      inliers[i] = 1;  // Mark as inlier
-    }
-  }
-  return inliers;  // Return inliers as a vector of 0s and 1s
 }
 
 DetectionResult XFeatONNX::detect_and_compute(cv::Mat image,

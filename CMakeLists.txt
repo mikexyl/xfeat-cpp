@@ -34,12 +34,16 @@ target_include_directories(gpu_matcher
         include
 )
 
-add_library(${PROJECT_NAME}
+set_target_properties(gpu_matcher PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
+add_library(${PROJECT_NAME} STATIC
     src/xfeat_onnx.cpp
     src/lighterglue_onnx.cpp
     src/xfeat_cv.cpp
     src/xfeat_netvlad_onnx.cpp
     src/netvlad_onnx.cpp)
+
+set_target_properties(${PROJECT_NAME} PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 target_link_libraries(${PROJECT_NAME}
     PUBLIC

@@ -51,11 +51,6 @@ class XFeatONNX {
                                 float min_cossim = -1.0f,
                                 TimingStats* timing_stats = nullptr);
 
-  std::vector<int> calc_warp_corners_and_matches(const cv::Mat& ref_points,
-                                                 const cv::Mat& dst_points,
-                                                 const cv::Mat& image1,
-                                                 cv::Mat* H);
-
   DetectionResult detect_and_compute(cv::Mat image,
                                      int top_k = 4096,
                                      cv::Mat* heatmap = nullptr,

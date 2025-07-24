@@ -17,6 +17,8 @@
 
 #include "xfeat-cpp/gpu_matcher.h"
 
+namespace xfeat {
+
 // ------------------------------------------------ CUDA helpers
 #define CUDA_CHECK(expr)                                                                                    \
   do {                                                                                                      \
@@ -345,3 +347,5 @@ std::tuple<std::vector<int>, std::vector<int>> CuMatcher::match_mkpts_local(cons
   }
   return {std::move(idx0), std::move(idx1)};
 }
+
+}  // namespace xfeat

@@ -1,11 +1,34 @@
 #pragma once
 
 #include <cmath>
+#include <iostream>
+#include <opencv2/calib3d.hpp>
 #include <opencv2/core.hpp>
 #include <opencv2/imgproc.hpp>
 #include <vector>
 
 namespace xfeat {
+inline std::vector<int> calc_warp_corners_and_matches(const cv::Mat& ref_points,
+                                                      const cv::Mat& dst_points,
+                                                      cv::Mat* H) {
+  // Compute homography (use cv::RANSAC as int for compatibility)
+  cv::Mat mask;
+  *H = cv::findHomography(ref_points, dst_points, cv::RANSAC, 3.5, mask, 200, 0.9);
+  if (H->empty()) {
+    std::cerr << "Homography estimation failed." << std::endl;
+    return {};
+  }
+  mask = mask.reshape(1, mask.total());
+
+  std::vector<int> inliers(ref_points.rows, 0);
+  for (int i = 0; i < mask.rows; ++i) {
+    if (mask.at<uchar>(i, 0) > 0) {
+      inliers[i] = 1;  // Mark as inlier
+    }
+  }
+  return inliers;  // Return inliers as a vector of 0s and 1s
+}
+
 /**
  * @brief Computes per-keypoint localization uncertainty from a heatmap.
  *
@@ -185,8 +208,8 @@ inline std::vector<cv::Vec2d> computeUncertaintySobel(const cv::Mat& heatmap,
                                                       cv::Mat* debug = nullptr) {
   CV_Assert(heatmap.type() == CV_32F || heatmap.type() == CV_64F);
 
-  static constexpr double kMaxStd = 12;
-  static constexpr double kMinStd = 4;
+  static constexpr double kMaxStd = 16;
+  static constexpr double kMinStd = 8;
 
   // 0) Max-pool via dilation with 8×8 structuring element
   cv::Mat pooled;
