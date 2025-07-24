@@ -23,7 +23,11 @@ class CuMatcher {
 
   void destroy();
 
-  std::vector<cv::DMatch> match(DetectionResult& result1, DetectionResult& result2, float min_sim, cv::Mat H) {
+  std::vector<cv::DMatch> match(DetectionResult& result1,
+                                DetectionResult& result2,
+                                float min_sim,
+                                cv::Mat H,
+                                int search_radius) {
     std::vector<cv::Point2f> keypoints1, keypoints2;
     for (int i = 0; i < result1.keypoints.rows; ++i) {
       keypoints1.emplace_back(result1.keypoints.at<float>(i, 0), result1.keypoints.at<float>(i, 1));
@@ -39,8 +43,8 @@ class CuMatcher {
       kpts1_warped = keypoints1;  // no warp, use original
     }
 
-    auto [indexes1, indexes2] =
-        this->match_mkpts_local(result1.descriptors, result2.descriptors, kpts1_warped, keypoints2, 15, min_sim);
+    auto [indexes1, indexes2] = this->match_mkpts_local(
+        result1.descriptors, result2.descriptors, kpts1_warped, keypoints2, search_radius, min_sim);
 
     size_t num_matched = indexes1.size();
 
@@ -93,8 +97,8 @@ class CuMatcher {
     if (not H.empty() and inlier_indices1.size() < result1.keypoints.rows * 0.8) {
       std::vector<cv::Point2f> kpts1_warped;
       cv::perspectiveTransform(keypoints1, kpts1_warped, H);
-      auto [rematch_id1, rematch_id2] =
-          this->match_mkpts_local(result1.descriptors, result2.descriptors, kpts1_warped, keypoints2, 5, min_sim);
+      auto [rematch_id1, rematch_id2] = this->match_mkpts_local(
+          result1.descriptors, result2.descriptors, kpts1_warped, keypoints2, search_radius * 0.05, min_sim);
 
       for (int i = 0; i < rematch_id1.size(); ++i) {
         if (rematch_id1[i] >= 0 && rematch_id2[i] >= 0) {

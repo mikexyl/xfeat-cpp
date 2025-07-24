@@ -208,8 +208,8 @@ inline std::vector<cv::Vec2d> computeUncertaintySobel(const cv::Mat& heatmap,
                                                       cv::Mat* debug = nullptr) {
   CV_Assert(heatmap.type() == CV_32F || heatmap.type() == CV_64F);
 
-  static constexpr double kMaxStd = 16;
-  static constexpr double kMinStd = 8;
+  static constexpr double kMaxStd = 8;
+  static constexpr double kMinStd = 4;
 
   // 0) Max-pool via dilation with 8×8 structuring element
   cv::Mat pooled;
@@ -245,9 +245,11 @@ inline std::vector<cv::Vec2d> computeUncertaintySobel(const cv::Mat& heatmap,
   sigmas.reserve(keypoints.size());
 
   for (const auto& kp : keypoints) {
-    // map original keypoint coords to downsampled grid
-    int u = cvRound(kp.pt.x / 8.0);
-    int v = cvRound(kp.pt.y / 8.0);
+    const double scalex = static_cast<double>(dxx.cols) / heatmap.cols;
+    const double scaley = static_cast<double>(dxx.rows) / heatmap.rows;
+
+    int u = std::clamp(static_cast<int>(kp.pt.x * scalex), 0, dxx.cols - 1);
+    int v = std::clamp(static_cast<int>(kp.pt.y * scaley), 0, dxx.rows - 1);
 
     // read second-derivatives
     double fxx = dxx.at<double>(v, u);

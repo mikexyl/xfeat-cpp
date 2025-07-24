@@ -172,7 +172,7 @@ int main(int argc, char* argv[]) {
     // lighterglue->match(result1, image1.size(), result2, image2.size(), matches);
 
     xfeat::TimingStats match_timing_stats;
-    auto matches = gpu_matcher.match(result1, result2, 0.4, cv::Mat());
+    auto matches = gpu_matcher.match(result1, result2, 0.4, cv::Mat(), 45);
 
     for (auto stats : match_timing_stats) {
       std::cout << "Match timing stats: " << stats.first << ": " << stats.second << " ms" << std::endl;
