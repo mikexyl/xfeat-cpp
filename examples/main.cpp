@@ -172,7 +172,48 @@ int main(int argc, char* argv[]) {
     // lighterglue->match(result1, image1.size(), result2, image2.size(), matches);
 
     xfeat::TimingStats match_timing_stats;
-    auto matches = gpu_matcher.match(result1, result2, 0.4, cv::Mat(), 45);
+    std::vector<cv::Point2f> keypoints1, keypoints2;
+    for (int i = 0; i < result1.keypoints.rows; ++i) {
+      keypoints1.emplace_back(result1.keypoints.at<float>(i, 0), result1.keypoints.at<float>(i, 1));
+    }
+    for (int i = 0; i < result2.keypoints.rows; ++i) {
+      keypoints2.emplace_back(result2.keypoints.at<float>(i, 0), result2.keypoints.at<float>(i, 1));
+    }
+    cv::Mat H = cv::Mat::eye(3, 3, CV_64F);  // 3x3 identity, double precision
+
+    auto gpu_matches = gpu_matcher.match_mkpts_gpuRansac(result1.descriptors,
+                                                         result2.descriptors,
+                                                         keypoints1,
+                                                         keypoints2,
+                                                         image1.size(),
+                                                         H,
+                                                         0.4,
+                                                         3.0f,
+                                                         64,
+                                                         100,
+                                                         8,
+                                                         1e-3);
+    auto t_start = std::chrono::high_resolution_clock::now();
+    gpu_matches = gpu_matcher.match_mkpts_gpuRansac(result1.descriptors,
+                                                    result2.descriptors,
+                                                    keypoints1,
+                                                    keypoints2,
+                                                    image1.size(),
+                                                    H,
+                                                    0.6,
+                                                    3.0f,
+                                                    128,
+                                                    100,
+                                                    8,
+                                                    1e-2);
+    auto t_end = std::chrono::high_resolution_clock::now();
+    match_timing_stats["gpu_match_mkpts_gpuRansac"] =
+        std::chrono::duration<double, std::milli>(t_end - t_start).count();
+    auto matches_indices = gpu_matches.matches;
+    std::vector<cv::DMatch> matches;
+    for (auto match : matches_indices) {
+      matches.emplace_back(match.first, match.second, 0.0f);
+    }
 
     for (auto stats : match_timing_stats) {
       std::cout << "Match timing stats: " << stats.first << ": " << stats.second << " ms" << std::endl;

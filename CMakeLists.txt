@@ -25,14 +25,18 @@ target_compile_features(gpu_matcher PUBLIC cxx_std_17)
 target_link_libraries(gpu_matcher
     PRIVATE
         ${OpenCV_LIBS}
-        CUDA::cublas            # cuBLAS
-        CUDA::cudart            # CUDA runtime
+    CUDA::cudart
+    CUDA::cublas
+    CUDA::cusolver
+    CUDA::curand
 )
 target_include_directories(gpu_matcher
     PRIVATE
         ${OpenCV_INCLUDE_DIRS}
         include
 )
+
+target_compile_options(gpu_matcher PUBLIC $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda>)
 
 set_target_properties(gpu_matcher PROPERTIES POSITION_INDEPENDENT_CODE ON)
 

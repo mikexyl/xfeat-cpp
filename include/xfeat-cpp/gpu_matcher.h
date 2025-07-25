@@ -124,6 +124,57 @@ class CuMatcher {
                                                                    float search_radius,
                                                                    float min_cossim = 0.f);
 
+  struct GpuMatchResult {
+    std::vector<std::pair<int, int>> matches;  // same as before
+    cv::Mat H;                                 // 3x3 (CV_32F)
+  };
+
+  std::vector<cv::DMatch> match_gpuRansac(DetectionResult& result1,
+                                          DetectionResult& result2,
+                                          cv::Size image_size,
+                                          float min_sim,
+                                          cv::Mat H,
+                                          int search_radius) {
+    std::vector<cv::Point2f> keypoints1, keypoints2;
+    for (int i = 0; i < result1.keypoints.rows; ++i) {
+      keypoints1.emplace_back(result1.keypoints.at<float>(i, 0), result1.keypoints.at<float>(i, 1));
+    }
+    for (int i = 0; i < result2.keypoints.rows; ++i) {
+      keypoints2.emplace_back(result2.keypoints.at<float>(i, 0), result2.keypoints.at<float>(i, 1));
+    }
+
+    auto indices = this->match_mkpts_gpuRansac(result1.descriptors,
+                                               result2.descriptors,
+                                               keypoints1,
+                                               keypoints2,
+                                               image_size,
+                                               H,
+                                               min_sim,
+                                               search_radius * 0.05,
+                                               128,
+                                               100,
+                                               search_radius* 0.05,
+                                               1e-2);
+    std::vector<cv::DMatch> matches;
+    for (const auto& match : indices.matches) {
+      matches.emplace_back(match.first, match.second, 0.0f);
+    }
+    return matches;
+  }
+
+  GpuMatchResult match_mkpts_gpuRansac(const cv::Mat& desc1,
+                                       const cv::Mat& desc2,
+                                       const std::vector<cv::Point2f>& kpts1,
+                                       const std::vector<cv::Point2f>& kpts2,
+                                       cv::Size img_size,
+                                       cv::Mat predicted_H,
+                                       float min_cossim,
+                                       float ransac_thr_px,
+                                       int ransac_iters,
+                                       int min_inliers,
+                                       float local_radius_px,  // e.g. 8.f
+                                       float geo_lambda);      // e.g. 1e-3f
+
  private:
   float *d_scores = nullptr, *d_A = nullptr, *d_B = nullptr;
   float2 *d_pred = nullptr, *d_kp2 = nullptr;
