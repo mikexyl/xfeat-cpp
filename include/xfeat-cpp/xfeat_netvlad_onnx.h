@@ -34,6 +34,25 @@ class XfeatNetVLADONNX {
                    bool use_gpu = true)
       : head_(env, head_model_path, use_gpu), netvlad_(env, netvlad_model_path, use_gpu) {}
 
+  void warmup() {
+    // Warm up both head and netvlad models
+
+    // create random M1, which is 3 dim tensor
+    int sizes[4] = {1, 64, 480 / 8, 640 / 8};  // Example sizes, adjust as needed
+    cv::Mat random_M1(4, sizes, CV_32F);
+    cv::randu(random_M1, 0, 1);                      // Random values
+    int x_prep_sizes[4] = {1, 3, 480, 640};          // Example sizes
+    cv::Mat random_x_prep(4, x_prep_sizes, CV_32F);  // Example sizes
+    cv::randu(random_M1, 0, 1);
+    cv::randu(random_x_prep, 0, 1);
+    std::cout << "M1 shape: " << random_M1.size[0] << " " << random_M1.size[1] << " " << random_M1.size[2] << " "
+              << random_M1.size[3] << std::endl;
+
+    std::cout << "isContinuous: " << random_M1.isContinuous() << std::endl;
+
+    transform(random_M1, random_x_prep);  // Warm up the transform
+  }
+
   // Example combined inference: runs head, then netvlad
   // M1 and x_prep are inputs for head, returns NetVLAD output
   std::vector<std::vector<float>> run(const cv::Mat& M1, const cv::Mat& x_prep) {

@@ -12,8 +12,9 @@ find_package(onnxruntime REQUIRED)
 find_package(TBB REQUIRED)
 find_package(faiss REQUIRED)
 find_package(CUDAToolkit REQUIRED)
+find_package(OpenMP REQUIRED)
 
-set(CMAKE_CUDA_ARCHITECTURES 89)             # adjust to your GPU
+set(CMAKE_CUDA_ARCHITECTURES 89)
 
 enable_language(CUDA)
 # ------------- target
@@ -29,6 +30,7 @@ target_link_libraries(gpu_matcher
     CUDA::cublas
     CUDA::cusolver
     CUDA::curand
+    OpenMP::OpenMP_CXX
 )
 target_include_directories(gpu_matcher
     PRIVATE
@@ -55,8 +57,9 @@ target_link_libraries(${PROJECT_NAME}
     ${onnxruntime_LIBRARY}
     TBB::tbb
     TBB::tbbmalloc
-    faiss
+    faiss_gpu faiss
     gpu_matcher
+    OpenMP::OpenMP_CXX
 )
 
 option(CUBLAS_DIR "Path to CUBLAS installation")

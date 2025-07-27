@@ -25,6 +25,22 @@ class LighterGlueCV {
     return cv::Ptr<LighterGlueCV>(new LighterGlueCV(env, params));
   }
 
+  void warmup() {
+    // create a dummy input to warm up the model
+    cv::Mat random_kpts0(params_.n_kpts, 2, CV_32F);
+    cv::randu(random_kpts0, 0, 100);  // Random keypoints
+    cv::Mat random_desc0(params_.n_kpts, 128, CV_32F);
+    cv::randu(random_desc0, 0, 255);  // Random descriptors
+    cv::Mat random_kpts1(params_.n_kpts, 2, CV_32F);
+    cv::randu(random_kpts1, 0, 100);  // Random keypoints
+    cv::Mat random_desc1(params_.n_kpts, 128, CV_32F);
+    cv::randu(random_desc1, 0, 255);
+    DetectionResult dummy_det0{random_kpts0, {}, random_desc0};
+    DetectionResult dummy_det1{random_kpts1, {}, random_desc1};
+    std::vector<cv::DMatch> dummy_matches;
+    match(dummy_det0, cv::Size(640, 480), dummy_det1, cv::Size(640, 480), dummy_matches);
+  }
+
   // OpenCV-style: match keypoints and descriptors from two images
   void match(const DetectionResult& query_det,
              const cv::Size& image0_size,

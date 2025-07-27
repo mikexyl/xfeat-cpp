@@ -88,6 +88,8 @@ int main(int argc, char* argv[]) {
     auto start = std::chrono::high_resolution_clock::now();
     xfeat_onnx.detect_and_compute(img, max_kpts, nullptr, &M1, &x_prep);
     auto t1 = std::chrono::high_resolution_clock::now();
+    std::cout << "M1 size: " << M1.size << ", type: " << M1.type() << std::endl;
+    std::cout << "x_prep size: " << x_prep.size << ", type: " << x_prep.type() << std::endl;
     cv::Mat dense_desc = head_netvlad_onnx.run(M1, x_prep);
     auto t2 = std::chrono::high_resolution_clock::now();
     auto result = netvlad_onnx.infer(dense_desc);

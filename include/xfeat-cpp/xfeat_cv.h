@@ -19,6 +19,15 @@ class XFeatCV : public cv::Feature2D {
   // Factory method to create an instance of XFeatCV
   static cv::Ptr<XFeatCV> create(Ort::Env& env, const Params& params) { return Ptr<XFeatCV>(new XFeatCV(env, params)); }
 
+  void warmup() {
+    // Create a dummy input to warm up the model
+    cv::Mat random_image(480, 640, CV_8UC3);
+    cv::randu(random_image, cv::Scalar(0, 0, 0), cv::Scalar(255, 255, 255));  // Random image
+    std::vector<cv::KeyPoint> dummy_keypoints;
+    cv::Mat dummy_descriptors;
+    detectAndCompute(random_image, cv::noArray(), dummy_keypoints, dummy_descriptors, false, nullptr, nullptr, nullptr);
+  }
+
   /** Detects keypoints and computes the descriptors */
   void detectAndCompute(InputArray image,
                         InputArray mask,
