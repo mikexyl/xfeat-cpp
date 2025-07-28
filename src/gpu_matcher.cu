@@ -7,6 +7,7 @@
 //  author: ChatGPT demo (v2 – finished main())
 // ------------------------------------------------------------------
 #include <cublas_v2.h>
+#include <cuda_runtime.h>
 #include <cuda_runtime_api.h>
 #include <curand_kernel.h>
 #include <cusolverDn.h>
@@ -19,10 +20,16 @@
 #include <thrust/host_vector.h>
 #include <thrust/iterator/counting_iterator.h>
 #include <thrust/sequence.h>
+#include <thrust/sort.h>
 #include <thrust/transform.h>
 
+#include <cassert>
+#include <cfloat>
 #include <chrono>
+#include <cmath>
+#include <cstdio>
 #include <iostream>
+#include <opencv2/core.hpp>
 #include <opencv2/opencv.hpp>
 #include <random>
 #include <vector>
@@ -402,859 +409,719 @@ std::tuple<std::vector<int>, std::vector<int>> CuMatcher::match_mkpts_local(cons
   return {std::move(idx0), std::move(idx1)};
 }
 
-struct NonNegToMask {
-  __host__ __device__ unsigned char operator()(int j) const { return (j >= 0) ? 1u : 0u; }
-};
+// ================== Tunables ==================
+static constexpr int H = 192;       // hypotheses
+static constexpr int L = 128;       // sample pool (top-L pairs)
+static constexpr int S = 96;        // Stage-A subset size
+static constexpr int K_KEEP = 16;   // finalists
+static constexpr int M_MAX = 384;   // cap tentative matches for speed
+static constexpr int J_SWEEPS = 8;  // Jacobi sweeps (9x9)
 
-struct IsNonZeroMask {
-  __host__ __device__ bool operator()(unsigned char m) const { return m != 0u; }
-};
-
-struct MarkInlier {
-  float thr2;
-  __host__ __device__ explicit MarkInlier(float t) : thr2(t) {}
-  __host__ __device__ unsigned char operator()(float e2) const { return (e2 <= thr2) ? 1u : 0u; }
-};
-
-__device__ __forceinline__ void warp_pt(const Homography& H, float x, float y, float& u, float& v) {
-  float X = H.h[0] * x + H.h[1] * y + H.h[2];
-  float Y = H.h[3] * x + H.h[4] * y + H.h[5];
-  float W = H.h[6] * x + H.h[7] * y + H.h[8];
-  float invW = 1.f / W;
-  u = X * invW;
-  v = Y * invW;
-}
-
-__device__ __forceinline__ void warp_point(const Homography& H, float x, float y, float& u, float& v) {
-  float X = H.h[0] * x + H.h[1] * y + H.h[2];
-  float Y = H.h[3] * x + H.h[4] * y + H.h[5];
-  float W = H.h[6] * x + H.h[7] * y + H.h[8];
-  float invW = 1.f / W;
-  u = X * invW;
-  v = Y * invW;
-}
-
-__device__ __forceinline__ void jacobianAt(const Homography& H, float x, float y, float J[4]) {
-  // u = (ax + by + c) / (gx + hy + 1)
-  // v = (dx + ey + f) / (gx + hy + 1)
-  const float a = H.h[0], b = H.h[1], c = H.h[2];
-  const float d = H.h[3], e = H.h[4], f = H.h[5];
-  const float g = H.h[6], h = H.h[7], i = H.h[8];
-
-  const float den = g * x + h * y + i;
-  const float den2 = den * den;
-
-  const float num_u = a * x + b * y + c;
-  const float num_v = d * x + e * y + f;
-
-  const float du_dx = (a * den - num_u * g) / den2;
-  const float du_dy = (b * den - num_u * h) / den2;
-  const float dv_dx = (d * den - num_v * g) / den2;
-  const float dv_dy = (e * den - num_v * h) / den2;
-
-  J[0] = du_dx;
-  J[1] = du_dy;
-  J[2] = dv_dx;
-  J[3] = dv_dy;
-}
-
-__device__ __forceinline__ float det2(const float J[4]) { return J[0] * J[3] - J[1] * J[2]; }
-
-// Return sigma_max / sigma_min of J using J^T J eigenvalues (2x2 closed form)
-__device__ __forceinline__ float anisotropy(const float J[4]) {
-  // JTJ = [a b; b c]
-  float a = J[0] * J[0] + J[2] * J[2];
-  float b = J[0] * J[1] + J[2] * J[3];
-  float c = J[1] * J[1] + J[3] * J[3];
-
-  float tr = a + c;
-  float det = a * c - b * b;
-  det = fmaxf(det, 1e-20f);
-  float disc = fmaxf(tr * tr - 4.f * det, 0.f);
-  float lmax = 0.5f * (tr + sqrtf(disc));
-  float lmin = 0.5f * (tr - sqrtf(disc));
-  lmin = fmaxf(lmin, 1e-20f);
-  return sqrtf(lmax / lmin);
-}
-
-__device__ __forceinline__ float det3x3(const Homography& H) {
-  const float* h = H.h;
-  return h[0] * (h[4] * h[8] - h[5] * h[7]) - h[1] * (h[3] * h[8] - h[5] * h[6]) + h[2] * (h[3] * h[7] - h[4] * h[6]);
-}
-
-__device__ __forceinline__ void adjugate3x3(const Homography& H, float A[9]) {
-  const float* h = H.h;
-  A[0] = (h[4] * h[8] - h[5] * h[7]);
-  A[1] = -(h[1] * h[8] - h[2] * h[7]);
-  A[2] = (h[1] * h[5] - h[2] * h[4]);
-  A[3] = -(h[3] * h[8] - h[5] * h[6]);
-  A[4] = (h[0] * h[8] - h[2] * h[6]);
-  A[5] = -(h[0] * h[5] - h[2] * h[3]);
-  A[6] = (h[3] * h[7] - h[4] * h[6]);
-  A[7] = -(h[0] * h[7] - h[1] * h[6]);
-  A[8] = (h[0] * h[4] - h[1] * h[3]);
-}
-
-__device__ __forceinline__ float frob_norm3x3(const float* m) {
-  float s = 0.f;
-#pragma unroll
-  for (int k = 0; k < 9; ++k) s += m[k] * m[k];
-  return sqrtf(s);
-}
-
-__device__ __forceinline__ float frob_diff_normed33(const Homography& H, const Homography& Hp) {
-  float s = (fabsf(H.h[8]) > 1e-12f) ? H.h[8] : 1.f;
-  float sp = (fabsf(Hp.h[8]) > 1e-12f) ? Hp.h[8] : 1.f;
-  float diff2 = 0.f;
-#pragma unroll
-  for (int k = 0; k < 9; ++k) {
-    float a = H.h[k] / s;
-    float b = Hp.h[k] / sp;
-    float d = a - b;
-    diff2 += d * d;
-  }
-  return sqrtf(diff2);
-}
-
-__device__ __forceinline__ float mean_reproj_gap(const Homography& H,
-                                                 const Homography& Hp,
-                                                 float imgW,
-                                                 float imgH,
-                                                 int S /*samples/side*/) {
-  float acc = 0.f;
-  int cnt = 0;
-  for (int sy = 0; sy < S; ++sy)
-    for (int sx = 0; sx < S; ++sx) {
-      float x = (imgW - 1) * (sx + 0.5f) / S;
-      float y = (imgH - 1) * (sy + 0.5f) / S;
-      float u1, v1, u2, v2;
-      warp_pt(H, x, y, u1, v1);
-      warp_pt(Hp, x, y, u2, v2);
-      float dx = u1 - u2, dy = v1 - v2;
-      acc += sqrtf(dx * dx + dy * dy);
-      ++cnt;
-    }
-  return acc / max(cnt, 1);
-}
-
-static inline float2 toFloat2(const cv::Point2f& p) { return float2{p.x, p.y}; }
-
-struct IsNonZero {
-  __host__ __device__ bool operator()(char x) const { return x != 0; }
-};
-
-// Build tentative (i,j) list by mutual score + threshold
-__global__ void buildTentativePairs(const int* __restrict__ bestIdxRow,
-                                    const float* __restrict__ bestScoreRow,
-                                    const float* __restrict__ bestScoreCol,
-                                    int N1,
-                                    int N2,
-                                    float min_cossim,
-                                    int* pair_i,
-                                    int* pair_j,
-                                    int* M_out) {
-  int i = blockIdx.x * blockDim.x + threadIdx.x;
-  if (i >= N1) return;
-
-  int j = bestIdxRow[i];
-  if (j >= 0 && j < N2) {
-    if (min_cossim <= 0.f || (bestScoreRow[i] > min_cossim && bestScoreCol[j] > min_cossim)) {
-      int idx = atomicAdd(M_out, 1);
-      pair_i[idx] = i;
-      pair_j[idx] = j;
-    }
-  }
-}
-
-// ---------------------------------------------------------------
-// cuRAND: init RNG states
-// ---------------------------------------------------------------
-__global__ void initCurand(curandStatePhilox4_32_10_t* states, unsigned long long seed) {
-  int id = blockIdx.x * blockDim.x + threadIdx.x;
-  curand_init(seed, id, 0, &states[id]);
-}
-
-// Sample 4 unique indices per hypothesis
-__global__ void sampleMinimalSets(curandStatePhilox4_32_10_t* states, int* samples, int iters, int M) {
-  int hid = blockIdx.x * blockDim.x + threadIdx.x;
-  if (hid >= iters) return;
-
-  auto st = states[hid];
-  int sel[4];
-  while (true) {
-    for (int k = 0; k < 4; ++k) sel[k] = curand(&st) % M;
-    bool ok = true;
-#pragma unroll
-    for (int a = 0; a < 4; ++a)
-      for (int b = a + 1; b < 4; ++b)
-        if (sel[a] == sel[b]) ok = false;
-    if (ok) break;
-  }
-  for (int k = 0; k < 4; ++k) samples[hid * 4 + k] = sel[k];
-  states[hid] = st;
-}
-
-// Build 8x8 linear systems Ah=b for each hypothesis (h22=1 eliminated)
-__global__ void buildLinearSystems8x8(const float2* __restrict__ p1,
-                                      const float2* __restrict__ p2,
-                                      const int* __restrict__ pair_i,
-                                      const int* __restrict__ pair_j,
-                                      const int* __restrict__ samples,
-                                      float* __restrict__ A,  // [iters][64]
-                                      float* __restrict__ b,  // [iters][8]
-                                      int iters) {
-  int hid = blockIdx.x * blockDim.x + threadIdx.x;
-  if (hid >= iters) return;
-
-  float x[4], y[4], X[4], Y[4];
-#pragma unroll
-  for (int k = 0; k < 4; ++k) {
-    int m = samples[hid * 4 + k];
-    float2 a = p1[m];
-    float2 b2 = p2[m];
-    x[k] = a.x;
-    y[k] = a.y;
-    X[k] = b2.x;
-    Y[k] = b2.y;
-  }
-
-  float* A_h = A + hid * 64;
-  float* b_h = b + hid * 8;
-
-  for (int k = 0; k < 4; ++k) {
-    int r0 = 2 * k, r1 = r0 + 1;
-    float row0[8] = {x[k], y[k], 1, 0, 0, 0, -x[k] * X[k], -y[k] * X[k]};
-    float row1[8] = {0, 0, 0, x[k], y[k], 1, -x[k] * Y[k], -y[k] * Y[k]};
-    for (int c = 0; c < 8; ++c) {
-      A_h[c * 8 + r0] = row0[c];  // column-major 8x8
-      A_h[c * 8 + r1] = row1[c];
-    }
-    b_h[r0] = X[k];
-    b_h[r1] = Y[k];
-  }
-}
-
-// ---------------------------------------------------------------
-// Kernel: pack solution h(8) -> 3x3 Homography with h22=1
-// ---------------------------------------------------------------
-__global__ void packHomographies(const float* __restrict__ h_solutions, Homography* H, int iters) {
-  int hid = blockIdx.x * blockDim.x + threadIdx.x;
-  if (hid >= iters) return;
-
-  const float* h = h_solutions + hid * 8;
-  Homography Ho;
-  Ho.h[0] = h[0];
-  Ho.h[1] = h[1];
-  Ho.h[2] = h[2];
-  Ho.h[3] = h[3];
-  Ho.h[4] = h[4];
-  Ho.h[5] = h[5];
-  Ho.h[6] = h[6];
-  Ho.h[7] = h[7];
-  Ho.h[8] = 1.f;
-  H[hid] = Ho;
-}
-
-// ---------------------------------------------------------------
-// Kernel: score each H against all tentative matches
-// ---------------------------------------------------------------
-__global__ void scoreHypotheses(const Homography* __restrict__ Hs,
-                                const unsigned char* __restrict__ valid,
-                                const float2* __restrict__ p1,
-                                const float2* __restrict__ p2,
-                                int M,
-                                int iters,
-                                float thr2,
-                                int* __restrict__ counts) {
-  int hid = blockIdx.x;
-  if (hid >= iters || !valid[hid]) {
-    if (hid < iters && threadIdx.x == 0) counts[hid] = 0;
-    return;
-  }
-  Homography H = Hs[hid];
-
-  extern __shared__ int s_count[];
-  if (threadIdx.x == 0) s_count[0] = 0;
-  __syncthreads();
-
-  for (int m = threadIdx.x; m < M; m += blockDim.x) {
-    float u, v;
-    warp_pt(H, p1[m].x, p1[m].y, u, v);
-    float dx = u - p2[m].x, dy = v - p2[m].y;
-    if (dx * dx + dy * dy <= thr2) atomicAdd(&s_count[0], 1);
-  }
-  __syncthreads();
-  if (threadIdx.x == 0) counts[hid] = s_count[0];
-}
-
-using RNGState = curandStatePhilox4_32_10_t;
-
-__global__ void computeSymmetricErrKernel(const Homography H,
-                                          const Homography Hinv,
-                                          const float2* __restrict__ p1,
-                                          const float2* __restrict__ p2,
-                                          float* __restrict__ errs,  // [M]
-                                          int M) {
-  int i = blockIdx.x * blockDim.x + threadIdx.x;
-  if (i >= M) return;
-
-  float u, v, x, y;
-  // forward p1 -> p2
-  warp_pt(H, p1[i].x, p1[i].y, u, v);
-  float dx1 = u - p2[i].x, dy1 = v - p2[i].y;
-
-  // backward p2 -> p1
-  warp_pt(Hinv, p2[i].x, p2[i].y, x, y);
-  float dx2 = x - p1[i].x, dy2 = y - p1[i].y;
-
-  errs[i] = dx1 * dx1 + dy1 * dy1 + dx2 * dx2 + dy2 * dy2;  // symmetric error
-}
-
-__global__ void predictKernel(Homography H,
-                              const float2* __restrict__ pts1,  // [N1]
-                              float2* __restrict__ yhat,        // [N1]
-                              int N1) {
-  int i = blockIdx.x * blockDim.x + threadIdx.x;
-  if (i >= N1) return;
-  float x = pts1[i].x, y = pts1[i].y;
-  float X = H.h[0] * x + H.h[1] * y + H.h[2];
-  float Y = H.h[3] * x + H.h[4] * y + H.h[5];
-  float W = H.h[6] * x + H.h[7] * y + H.h[8];
-  float invW = 1.f / W;
-  yhat[i] = make_float2(X * invW, Y * invW);
-}
-
-__global__
-void validateHomographiesKernel(const Homography* __restrict__ Hs,
-                                int iters,
-                                float imgW,
-                                float imgH,
-                                float max_anisotropy,
-                                float max_scale,
-                                float min_den,
-                                float cond_frob_max,
-                                Homography Hpred,
-                                float max_frob_gap,
-                                float max_reproj_gap,
-                                int samples_per_side,
-                                unsigned char* __restrict__ valid) {
-  int hid = blockIdx.x * blockDim.x + threadIdx.x;
-  if (hid >= iters) return;
-
-  const Homography H = Hs[hid];
-
-  // ----- (0) Global det / condition estimate (cheap) ---------------------
-  float detH = det3x3(H);
-  if (fabsf(detH) < 1e-8f) {
-    valid[hid] = 0;
-    return;
-  }
-
-  // --- NEW: distance to prior (fast) ------------------------------------
-  float frob_gap = frob_diff_normed33(H, Hpred);
-  if (!isfinite(frob_gap) || frob_gap > max_frob_gap) {
-    valid[hid] = 0;
-    return;
-  }
-
-  // --- NEW: distance to prior (geometric) --------------------------------
-  float reproj_gap = mean_reproj_gap(H, Hpred, imgW, imgH, 3);
-  if (!isfinite(reproj_gap) || reproj_gap > max_reproj_gap) {
-    valid[hid] = 0;
-    return;
-  }
-
-  // cond_est ~= ||H||_F * ||H^{-1}||_F
-  float adj[9];
-  adjugate3x3(H, adj);
-  float invH[9];
-  float inv_scale = 1.f / detH;
-#pragma unroll
-  for (int k = 0; k < 9; ++k) invH[k] = adj[k] * inv_scale;
-
-  float cond_est = frob_norm3x3(H.h) * frob_norm3x3(invH);
-  if (cond_est > cond_frob_max || !isfinite(cond_est)) {
-    valid[hid] = 0;
-    return;
-  }
-
-  // ----- (1) Quick triangle orientation at center ------------------------
-  {
-    float cx = imgW * 0.5f, cy = imgH * 0.5f;
-    float u0, v0, u1, v1, u2, v2;
-    warp_pt(H, cx, cy, u0, v0);
-    warp_pt(H, cx + 1, cy, u1, v1);
-    warp_pt(H, cx, cy + 1, u2, v2);
-    float cross_z = (u1 - u0) * (v2 - v0) - (v1 - v0) * (u2 - u0);
-    if (!isfinite(cross_z) || cross_z <= 0.f) {
-      valid[hid] = 0;
-      return;
-    }
-  }
-
-  // ----- (2) Sample grid: denominator, det(J), anisotropy, scale ---------
-  const int S = samples_per_side;
-  float minDen = 1e30f;
-  for (int sy = 0; sy < S; ++sy) {
-    for (int sx = 0; sx < S; ++sx) {
-      float x = (imgW - 1) * (sx + 0.5f) / S;
-      float y = (imgH - 1) * (sy + 0.5f) / S;
-
-      // denominator
-      float den = H.h[6] * x + H.h[7] * y + H.h[8];
-      minDen = fminf(minDen, fabsf(den));
-      if (!isfinite(den)) {
-        valid[hid] = 0;
-        return;
-      }
-
-      // Jacobian tests
-      float J[4];
-      jacobianAt(H, x, y, J);
-
-      // orientation preserve
-      float detJ = det2(J);
-      if (detJ <= 0.f || !isfinite(detJ)) {
-        valid[hid] = 0;
-        return;
-      }
-
-      // anisotropy
-      float a = anisotropy(J);
-      if (!isfinite(a) || a > max_anisotropy) {
-        valid[hid] = 0;
-        return;
-      }
-
-      // absolute scale clamp (sigma_max)
-      // reuse JTJ lambda_max from anisotropy() derivation
-      float xx = J[0] * J[0] + J[2] * J[2];
-      float xy = J[0] * J[1] + J[2] * J[3];
-      float yy = J[1] * J[1] + J[3] * J[3];
-      float tr = xx + yy;
-      float det = xx * yy - xy * xy;
-      det = fmaxf(det, 1e-20f);
-      float disc = fmaxf(tr * tr - 4.f * det, 0.f);
-      float lmax = 0.5f * (tr + sqrtf(disc));
-      float sigma_max = sqrtf(lmax);
-      if (!isfinite(sigma_max) || sigma_max > max_scale) {
-        valid[hid] = 0;
-        return;
-      }
-    }
-  }
-
-  if (minDen < min_den) {
-    valid[hid] = 0;
-    return;
-  }
-
-  valid[hid] = 1;
-}
-
-// Put next to your Homography definition (host-side helper)
-inline Homography toHomography(const cv::Mat& Hcv, bool renormalize = true) {
-  CV_Assert(Hcv.rows == 3 && Hcv.cols == 3);
-  Homography H{};
-
-  if (Hcv.type() == CV_32F) {
-    const float* m = Hcv.ptr<float>(0);
-    for (int k = 0; k < 9; ++k) H.h[k] = m[k];
-  } else if (Hcv.type() == CV_64F) {
-    const double* m = Hcv.ptr<double>(0);
-    for (int k = 0; k < 9; ++k) H.h[k] = static_cast<float>(m[k]);
-  } else {
-    CV_Error(cv::Error::StsUnsupportedFormat, "Homography must be CV_32F or CV_64F");
-  }
-
-  if (renormalize) {
-    const float s = (std::abs(H.h[8]) > 1e-12f) ? H.h[8] : 1.f;
-    for (int k = 0; k < 9; ++k) H.h[k] /= s;
-    H.h[8] = 1.f;
-  }
-  return H;
-}
-
-// scores: [N1 x N2] (column-major), pts2: [N2], y_hat: [N1]
-__global__ void localRematchKernel(const float* __restrict__ scores,
-                                   const float2* __restrict__ pts2,
-                                   const float2* __restrict__ y_hat,
-                                   int N1,
-                                   int N2,
-                                   float radius2,
-                                   float lambda,
-                                   int* __restrict__ new_row2col,
-                                   float* __restrict__ new_rowScore) {
-  int i = blockIdx.x;
-  if (i >= N1) return;
-
-  const float2 yh = y_hat[i];
-
+// ================== Argmax (row/col) ==========
+__global__ void argmaxRows(const float* scores, int* idx, float* val, int N1, int N2) {
+  int r = blockIdx.x;
+  if (r >= N1) return;
+  extern __shared__ unsigned char smem[];
+  float* sval = (float*)smem;
+  int* sidx = (int*)(sval + blockDim.x);
   float best = -FLT_MAX;
-  int bestj = -1;
-
+  int b = -1;
   for (int j = threadIdx.x; j < N2; j += blockDim.x) {
-    float dx = pts2[j].x - yh.x;
-    float dy = pts2[j].y - yh.y;
-    float d2 = dx * dx + dy * dy;
-    if (d2 <= radius2) {
-      float s = scores[i + j * N1] - lambda * d2;
-      if (s > best) {
-        best = s;
-        bestj = j;
-      }
+    float v = scores[r + j * N1];
+    if (v > best) {
+      best = v;
+      b = j;
     }
   }
-
-  // block reduce
-  extern __shared__ unsigned char sm[];
-  float* s_val = (float*)sm;
-  int* s_idx = (int*)(s_val + blockDim.x);
-  s_val[threadIdx.x] = best;
-  s_idx[threadIdx.x] = bestj;
+  sval[threadIdx.x] = best;
+  sidx[threadIdx.x] = b;
   __syncthreads();
-  for (int off = blockDim.x >> 1; off > 0; off >>= 1) {
-    if (threadIdx.x < off) {
-      if (s_val[threadIdx.x + off] > s_val[threadIdx.x]) {
-        s_val[threadIdx.x] = s_val[threadIdx.x + off];
-        s_idx[threadIdx.x] = s_idx[threadIdx.x + off];
+  for (int o = blockDim.x >> 1; o; o >>= 1) {
+    if (threadIdx.x < o) {
+      if (sval[threadIdx.x + o] > sval[threadIdx.x]) {
+        sval[threadIdx.x] = sval[threadIdx.x + o];
+        sidx[threadIdx.x] = sidx[threadIdx.x + o];
       }
     }
     __syncthreads();
   }
   if (threadIdx.x == 0) {
-    new_row2col[i] = s_idx[0];
-    new_rowScore[i] = s_val[0];
+    idx[r] = sidx[0];
+    val[r] = sval[0];
   }
 }
 
-CuMatcher::GpuMatchResult CuMatcher::match_mkpts_gpuRansac(const cv::Mat& desc1,
-                                                           const cv::Mat& desc2,
-                                                           const std::vector<cv::Point2f>& kpts1,
-                                                           const std::vector<cv::Point2f>& kpts2,
-                                                           cv::Size img_size,
-                                                           cv::Mat predicted_H,
-                                                           float min_cossim,
-                                                           float ransac_thr_px,
-                                                           int ransac_iters,
-                                                           int min_inliers,
-                                                           float local_radius_px,  // e.g. 8.f
-                                                           float geo_lambda)       // e.g. 1e-3f
-{
-  CuMatcher::GpuMatchResult res;
-  int img_width = img_size.width, img_height = img_size.height;
-
-  const int N1 = desc1.rows, N2 = desc2.rows, D = desc1.cols;
-  CV_Assert(desc1.type() == CV_32F && desc2.type() == CV_32F && D == desc2.cols);
-
-  // -------------------- 0) Push descriptors & keypoints --------------------
-  CUDA_CHECK(cudaMemcpy(d_A, desc1.ptr<float>(), size_t(N1) * D * sizeof(float), cudaMemcpyHostToDevice));
-  CUDA_CHECK(cudaMemcpy(d_B, desc2.ptr<float>(), size_t(N2) * D * sizeof(float), cudaMemcpyHostToDevice));
-
-  thrust::device_vector<float2> d_pts1(N1), d_pts2(N2);
-  {
-    std::vector<float2> h1(N1), h2(N2);
-    for (int i = 0; i < N1; ++i) h1[i] = toFloat2(kpts1[i]);
-    for (int j = 0; j < N2; ++j) h2[j] = toFloat2(kpts2[j]);
-    CUDA_CHECK(
-        cudaMemcpy(thrust::raw_pointer_cast(d_pts1.data()), h1.data(), N1 * sizeof(float2), cudaMemcpyHostToDevice));
-    CUDA_CHECK(
-        cudaMemcpy(thrust::raw_pointer_cast(d_pts2.data()), h2.data(), N2 * sizeof(float2), cudaMemcpyHostToDevice));
+__global__ void argmaxCols(const float* scores, int* idx, float* val, int N1, int N2) {
+  int c = blockIdx.x;
+  if (c >= N2) return;
+  extern __shared__ unsigned char smem[];
+  float* sval = (float*)smem;
+  int* sidx = (int*)(sval + blockDim.x);
+  float best = -FLT_MAX;
+  int b = -1;
+  for (int i = threadIdx.x; i < N1; i += blockDim.x) {
+    float v = scores[i + c * N1];
+    if (v > best) {
+      best = v;
+      b = i;
+    }
   }
+  sval[threadIdx.x] = best;
+  sidx[threadIdx.x] = b;
+  __syncthreads();
+  for (int o = blockDim.x >> 1; o; o >>= 1) {
+    if (threadIdx.x < o) {
+      if (sval[threadIdx.x + o] > sval[threadIdx.x]) {
+        sval[threadIdx.x] = sval[threadIdx.x + o];
+        sidx[threadIdx.x] = sidx[threadIdx.x + o];
+      }
+    }
+    __syncthreads();
+  }
+  if (threadIdx.x == 0) {
+    idx[c] = sidx[0];
+    val[c] = sval[0];
+  }
+}
 
-  // -------------------- 1) Cosine sim matrix: scores = A^T B ---------------
+// ================== Tentatives (mutual) =======
+__global__ void buildTentativePairs_mutual(const int* bestRow,
+                                           const int* bestCol,
+                                           const float* bestRowVal,
+                                           const float* bestColVal,
+                                           int N1,
+                                           int N2,
+                                           float thr,
+                                           int* pair_i,
+                                           int* pair_j,
+                                           float* pair_s,
+                                           int* Mout) {
+  int i = blockIdx.x * blockDim.x + threadIdx.x;
+  if (i >= N1) return;
+  int j = bestRow[i];
+  if (j >= 0 && j < N2 && bestCol[j] == i) {
+    if (thr <= 0.f || (bestRowVal[i] > thr && bestColVal[j] > thr)) {
+      int k = atomicAdd(Mout, 1);
+      pair_i[k] = i;
+      pair_j[k] = j;
+      pair_s[k] = bestRowVal[i];
+    }
+  }
+}
+
+// ================== RNG =======================
+__global__ void initPhilox(curandStatePhilox4_32_10_t* st, unsigned long long seed) {
+  int id = blockIdx.x * blockDim.x + threadIdx.x;
+  curand_init(seed, id, 0, &st[id]);
+}
+
+// ================== Build A (col-major) =======
+__global__ void buildA8x9_colmajor(const float2* x1,
+                                   const float2* x2,
+                                   const int* samples,
+                                   int poolL,
+                                   float* A_cm)  // [H][8x9], lda=8
+{
+  int h = blockIdx.x * blockDim.x + threadIdx.x;
+  if (h >= H) return;
+  float* A = A_cm + h * (8 * 9);
+// samples are indices into [0..poolL)
+#pragma unroll
+  for (int k = 0; k < 8; ++k) {
+    int m = samples[h * 8 + k];
+    m = (m < poolL) ? m : (m % poolL);
+    float x = x1[m].x, y = x1[m].y, X = x2[m].x, Y = x2[m].y;
+    A[k + 0 * 8] = X * x;
+    A[k + 1 * 8] = X * y;
+    A[k + 2 * 8] = X;
+    A[k + 3 * 8] = Y * x;
+    A[k + 4 * 8] = Y * y;
+    A[k + 5 * 8] = Y;
+    A[k + 6 * 8] = x;
+    A[k + 7 * 8] = y;
+    A[k + 8 * 8] = 1.f;
+  }
+}
+
+// ================== N=A^T A (9x9) =============
+__global__ void gram9(const float* A_cm, float* N)  // A: [H][8x9] col-major
+{
+  int h = blockIdx.x * blockDim.x + threadIdx.x;
+  if (h >= H) return;
+  const float* A = A_cm + h * (8 * 9);
+  float* G = N + h * 81;
+// G = A^T A : for c1,c2 in [0..8], dot of columns (length 8)
+#pragma unroll
+  for (int c1 = 0; c1 < 9; ++c1) {
+    for (int c2 = c1; c2 < 9; ++c2) {
+      float acc = 0.f;
+#pragma unroll
+      for (int r = 0; r < 8; ++r) acc += A[r + c1 * 8] * A[r + c2 * 8];
+      G[c1 + 9 * c2] = G[c2 + 9 * c1] = acc;  // col-major write
+    }
+  }
+}
+
+// ========== 9x9 Jacobi (smallest eigenvec) ====
+__device__ void jacobi_smallest_9x9(float* Gcm, float* Vcm)  // both col-major
+{
+  // Init V=I
+  for (int j = 0; j < 9; ++j) {
+    for (int i = 0; i < 9; ++i) Vcm[i + 9 * j] = (i == j) ? 1.f : 0.f;
+  }
+  // Cyclic sweeps
+  for (int sweep = 0; sweep < J_SWEEPS; ++sweep) {
+    for (int p = 0; p < 8; ++p)
+      for (int q = p + 1; q < 9; ++q) {
+        float Gpp = Gcm[p + 9 * p];
+        float Gqq = Gcm[q + 9 * q];
+        float Gpq = Gcm[p + 9 * q];
+        if (fabsf(Gpq) < 1e-10f * (fabsf(Gpp) + fabsf(Gqq))) continue;
+        float tau = (Gqq - Gpp) / (2.f * Gpq);
+        float t = copysignf(1.f / (fabsf(tau) + sqrtf(1.f + tau * tau)), tau);
+        float c = rsqrtf(1.f + t * t);
+        float s = t * c;
+
+        // G = J^T G J (apply to cols/rows p,q)
+        for (int k = 0; k < 9; ++k) {  // columns update
+          float Gkp = Gcm[k + 9 * p];
+          float Gkq = Gcm[k + 9 * q];
+          Gcm[k + 9 * p] = c * Gkp - s * Gkq;
+          Gcm[k + 9 * q] = s * Gkp + c * Gkq;
+        }
+        for (int k = 0; k < 9; ++k) {  // rows update
+          float Gpk = Gcm[p + 9 * k];
+          float Gqk = Gcm[q + 9 * k];
+          Gcm[p + 9 * k] = c * Gpk - s * Gqk;
+          Gcm[q + 9 * k] = s * Gpk + c * Gqk;
+        }
+        // V = V J
+        for (int k = 0; k < 9; ++k) {
+          float Vkp = Vcm[k + 9 * p];
+          float Vkq = Vcm[k + 9 * q];
+          Vcm[k + 9 * p] = c * Vkp - s * Vkq;
+          Vcm[k + 9 * q] = s * Vkp + c * Vkq;
+        }
+      }
+  }
+  // After sweeps, diagonals approx eigenvalues; smallest at argmin diag
+}
+
+__global__ void smallestEigenVec9(const float* Ncm, float* e_row)  // e_row[H][9] row-major
+{
+  int h = blockIdx.x * blockDim.x + threadIdx.x;
+  if (h >= H) return;
+  // put N into registers/shared
+  float G[81];
+  float V[81];
+#pragma unroll
+  for (int k = 0; k < 81; ++k) G[k] = Ncm[h * 81 + k];
+  jacobi_smallest_9x9(G, V);
+  // find argmin diag of G
+  int imin = 0;
+  float dmin = G[0];
+  for (int i = 1; i < 9; ++i) {
+    float d = G[i + 9 * i];
+    if (d < dmin) {
+      dmin = d;
+      imin = i;
+    }
+  }
+  // eigenvector is column 'imin' of V (col-major). Write as row-major 3x3 (E)
+  float* out = e_row + h * 9;
+  for (int r = 0; r < 9; ++r) out[r] = V[r + 9 * imin];
+}
+
+// ========== Stage-A scoring (subset) ==========
+__device__ __forceinline__ int score_subset_warp(const float e[9],
+                                                 const float2* __restrict__ x1,
+                                                 const float2* __restrict__ x2,
+                                                 const int* __restrict__ subset_idx,
+                                                 int Ssz) {
+  const unsigned full = 0xffffffff;
+  float e11 = e[0], e12 = e[1], e13 = e[2], e21 = e[3], e22 = e[4], e23 = e[5], e31 = e[6], e32 = e[7], e33 = e[8];
+  int acc = 0;
+  for (int t = threadIdx.x; t < Ssz; t += blockDim.x) {
+    int m = subset_idx[t];
+    float x = x1[m].x, y = x1[m].y, X = x2[m].x, Y = x2[m].y;
+    float Ex1u = e11 * x + e12 * y + e13;
+    float Ex1v = e21 * x + e22 * y + e23;
+    float Ex1w = e31 * x + e32 * y + e33;
+    float num = X * Ex1u + Y * Ex1v + Ex1w;
+    float Etxu = e11 * X + e21 * Y + e31;
+    float Etyv = e12 * X + e22 * Y + e32;
+    float den = Ex1u * Ex1u + Ex1v * Ex1v + Etxu * Etxu + Etyv * Etyv;
+    float d2 = (num * num) / fmaxf(den, 1e-12f);
+    int inl = (d2 <= 1.f);  // threshold=1 in normalized units here; caller scales subset_idx accordingly
+    unsigned mask = __ballot_sync(full, inl);
+    if ((threadIdx.x & 31) == 0) acc += __popc(mask);
+  }
+  return acc;
+}
+
+__global__ void stageA_build_and_score(const float2* x1,
+                                       const float2* x2,
+                                       const int* subset_idx,
+                                       int Ssz,
+                                       const int* samples,
+                                       int poolL,
+                                       float thr2_subset,
+                                       int* counts,
+                                       float* E_row_out) {
+  int h = blockIdx.x;
+  if (h >= H) return;
+  // 1) Build A -> N
+  float A[8 * 9];
+#pragma unroll
+  for (int k = 0; k < 8; ++k) {
+    int m = samples[h * 8 + k];
+    m = (m < poolL) ? m : (m % poolL);
+    float x = x1[m].x, y = x1[m].y, X = x2[m].x, Y = x2[m].y;
+    A[k + 0 * 8] = X * x;
+    A[k + 1 * 8] = X * y;
+    A[k + 2 * 8] = X;
+    A[k + 3 * 8] = Y * x;
+    A[k + 4 * 8] = Y * y;
+    A[k + 5 * 8] = Y;
+    A[k + 6 * 8] = x;
+    A[k + 7 * 8] = y;
+    A[k + 8 * 8] = 1.f;
+  }
+  float N[81] = {0.f};
+#pragma unroll
+  for (int c1 = 0; c1 < 9; ++c1) {
+    for (int c2 = c1; c2 < 9; ++c2) {
+      float acc = 0.f;
+#pragma unroll
+      for (int r = 0; r < 8; ++r) acc += A[r + c1 * 8] * A[r + c2 * 8];
+      N[c1 + 9 * c2] = N[c2 + 9 * c1] = acc;
+    }
+  }
+  // 2) Smallest eigenvector (E as 9-vector)
+  float V[81];
+  jacobi_smallest_9x9(N, V);
+  int imin = 0;
+  float dmin = N[0];
+  for (int i = 1; i < 9; ++i) {
+    float d = N[i + 9 * i];
+    if (d < dmin) {
+      dmin = d;
+      imin = i;
+    }
+  }
+  float e[9];
+  for (int r = 0; r < 9; ++r) e[r] = V[r + 9 * imin];
+
+  // 3) Stage-A scoring on subset
+  int c = score_subset_warp(e, x1, x2, subset_idx, Ssz);
+  if (threadIdx.x == 0) {
+    counts[h] = c;
+    // store E (row-major) for reuse in stage-B if selected
+    float* out = E_row_out + 9 * h;
+    for (int k = 0; k < 9; ++k) out[k] = e[k];
+  }
+}
+
+// ========== 3x3 rank-2 projection (Jacobi SVD) =========
+__device__ void svd3x3(const float* M, float* U, float* S, float* Vt) {  // all col-major
+  // Symmetric eigen of MtM to get V, then U = M*V*S^{-1}
+  float MtM[9] = {0};
+  for (int j = 0; j < 3; ++j)
+    for (int i = 0; i < 3; ++i) {
+      float acc = 0.f;
+      for (int k = 0; k < 3; ++k) {
+        float Mik = M[i + 3 * k], Mjk = M[j + 3 * k];
+        acc += Mjk * Mik;
+      }
+      MtM[i + 3 * j] = acc;
+    }
+  // Jacobi for 3x3 symmetric
+  float V[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
+  for (int s = 0; s < 6; ++s) {
+    for (int p = 0; p < 2; ++p)
+      for (int q = p + 1; q < 3; ++q) {
+        float App = MtM[p + 3 * p], Aqq = MtM[q + 3 * q], Apq = MtM[p + 3 * q];
+        if (fabsf(Apq) < 1e-12f * (fabsf(App) + fabsf(Aqq))) continue;
+        float tau = (Aqq - App) / (2.f * Apq);
+        float t = copysignf(1.f / (fabsf(tau) + sqrtf(1.f + tau * tau)), tau);
+        float c = rsqrtf(1.f + t * t), s2 = t * c;
+        // cols p,q of MtM and V
+        for (int k = 0; k < 3; ++k) {
+          float akp = MtM[k + 3 * p], akq = MtM[k + 3 * q];
+          MtM[k + 3 * p] = c * akp - s2 * akq;
+          MtM[k + 3 * q] = s2 * akp + c * akq;
+        }
+        for (int k = 0; k < 3; ++k) {
+          float apk = MtM[p + 3 * k], aqk = MtM[q + 3 * k];
+          MtM[p + 3 * k] = c * apk - s2 * aqk;
+          MtM[q + 3 * k] = s2 * apk + c * aqk;
+        }
+        for (int k = 0; k < 3; ++k) {
+          float vkp = V[k + 3 * p], vkq = V[k + 3 * q];
+          V[k + 3 * p] = c * vkp - s2 * vkq;
+          V[k + 3 * q] = s2 * vkp + c * vkq;
+        }
+      }
+  }
+  // singular values from diag(MtM)
+  float sv[3] = {sqrtf(fmaxf(MtM[0], 0.f)), sqrtf(fmaxf(MtM[4], 0.f)), sqrtf(fmaxf(MtM[8], 0.f))};
+  // sort descending (simple bubble, 3 items)
+  int o[3] = {0, 1, 2};
+  for (int a = 0; a < 2; ++a)
+    for (int b = a + 1; b < 3; ++b)
+      if (sv[b] > sv[a]) {
+        float ts = sv[a];
+        sv[a] = sv[b];
+        sv[b] = ts;
+        int to = o[a];
+        o[a] = o[b];
+        o[b] = to;
+      }
+  float Vsorted[9];
+  for (int j = 0; j < 3; ++j)
+    for (int i = 0; i < 3; ++i) Vsorted[i + 3 * j] = V[i + 3 * o[j]];
+  // U = M * V * inv(S)
+  float Utmp[9] = {0};
+  for (int j = 0; j < 3; ++j) {
+    float invs = (sv[j] > 1e-12f) ? 1.f / sv[j] : 0.f;
+    for (int i = 0; i < 3; ++i) {
+      float acc = 0.f;
+      for (int k = 0; k < 3; ++k) acc += M[i + 3 * k] * Vsorted[k + 3 * j];
+      Utmp[i + 3 * j] = acc * invs;
+    }
+  }
+  // Orthonormalize U with Gram-Schmidt quick fix
+  // (skipped—usually fine)
+  // Return
+  for (int j = 0; j < 3; ++j) S[j] = sv[j];
+  for (int k = 0; k < 9; ++k) {
+    Vt[k] = Vsorted[(k % 3) * 3 + k / 3];
+    U[k] = Utmp[k];
+  }
+}
+
+__global__ void enforce_rank2_and_score(const float* E_row_in,  // [K][9] row
+                                        const int* finalists,   // [K] indices into stage-A E bank
+                                        const float2* x1,
+                                        const float2* x2,
+                                        int M,
+                                        float thr2,
+                                        int* counts,
+                                        float* Ebest_row_out) {
+  int k = blockIdx.x;
+  if (k >= K_KEEP) return;
+  const float* e_in = E_row_in + 9 * finalists[k];
+
+  // convert to col-major 3x3
+  float Ecm[9];
+  Ecm[0] = e_in[0];
+  Ecm[1] = e_in[3];
+  Ecm[2] = e_in[6];
+  Ecm[3] = e_in[1];
+  Ecm[4] = e_in[4];
+  Ecm[5] = e_in[7];
+  Ecm[6] = e_in[2];
+  Ecm[7] = e_in[5];
+  Ecm[8] = e_in[8];
+
+  // SVD and set smallest sigma to 0
+  float U[9], Vt[9], S[3];
+  svd3x3(Ecm, U, S, Vt);
+  S[2] = 0.f;
+  // E = U * diag(S) * Vt
+  float Ecm2[9] = {0};
+  for (int j = 0; j < 3; ++j) {
+    float sj = S[j];
+    for (int i = 0; i < 3; ++i) {
+      float acc = 0.f;
+      for (int t = 0; t < 3; ++t) acc += U[i + 3 * t] * ((t == j) ? sj : 0.f);
+      // later multiply by Vt
+    }
+  }
+  // Multiply U*diag(S) first into T
+  float T[9] = {0};
+  for (int j = 0; j < 3; ++j)
+    for (int i = 0; i < 3; ++i) T[i + 3 * j] = U[i + 3 * j] * S[j];
+  // E = T * Vt
+  float Ecm_final[9] = {0};
+  for (int j = 0; j < 3; ++j)
+    for (int i = 0; i < 3; ++i) {
+      float acc = 0.f;
+      for (int t = 0; t < 3; ++t) acc += T[i + 3 * t] * Vt[t + 3 * j];
+      Ecm_final[i + 3 * j] = acc;
+    }
+  // to row-major
+  float e[9] = {Ecm_final[0],
+                Ecm_final[3],
+                Ecm_final[6],
+                Ecm_final[1],
+                Ecm_final[4],
+                Ecm_final[7],
+                Ecm_final[2],
+                Ecm_final[5],
+                Ecm_final[8]};
+
+  // Score on all M with warp ballots
+  const unsigned full = 0xffffffff;
+  float e11 = e[0], e12 = e[1], e13 = e[2], e21 = e[3], e22 = e[4], e23 = e[5], e31 = e[6], e32 = e[7], e33 = e[8];
+  __shared__ int sum;
+  if (threadIdx.x == 0) sum = 0;
+  __syncthreads();
+  int local = 0;
+  for (int m = threadIdx.x; m < M; m += blockDim.x) {
+    float x = x1[m].x, y = x1[m].y, X = x2[m].x, Y = x2[m].y;
+    float Ex1u = e11 * x + e12 * y + e13, Ex1v = e21 * x + e22 * y + e23, Ex1w = e31 * x + e32 * y + e33;
+    float num = X * Ex1u + Y * Ex1v + Ex1w;
+    float Etxu = e11 * X + e21 * Y + e31, Etyv = e12 * X + e22 * Y + e32;
+    float den = Ex1u * Ex1u + Ex1v * Ex1v + Etxu * Etxu + Etyv * Etyv;
+    float d2 = (num * num) / fmaxf(den, 1e-12f);
+    int inl = (d2 <= thr2);
+    unsigned mask = __ballot_sync(full, inl);
+    if ((threadIdx.x & 31) == 0) local += __popc(mask);
+  }
+  atomicAdd(&sum, local);
+  __syncthreads();
+  if (threadIdx.x == 0) {
+    counts[k] = sum;
+    // optionally write back the final E (row-major) for the winner later
+    float* out = Ebest_row_out + 9 * k;
+    for (int t = 0; t < 9; ++t) out[t] = e[t];
+  }
+}
+
+// ========== Public entry ======================
+EResult CuMatcher::match_mkpts_gpuRansac_E(const cv::Mat& desc1,
+                                           const cv::Mat& desc2,
+                                           const std::vector<cv::Point2f>& kpts1_px,
+                                           const std::vector<cv::Point2f>& kpts2_px,
+                                           float min_cossim,
+                                           float sampson_thr_px,
+                                           int ransac_seed,
+                                           float fx,
+                                           float fy,
+                                           float cx,
+                                           float cy) {
+  const int N1 = desc1.rows, N2 = desc2.rows, D = desc1.cols;
+  assert(desc1.type() == CV_32F && desc2.type() == CV_32F && D == desc2.cols);
+  assert((int)kpts1_px.size() == N1 && (int)kpts2_px.size() == N2);
+
+  // ---- BF cosine with cuBLAS ----
+  cublasHandle_t h;
+  CUBLAS_CHECK(cublasCreate(&h));
+  thrust::device_vector<float> dS(N1 * N2);
+  float *dA = nullptr, *dB = nullptr;
+  CUDA_CHECK(cudaMalloc(&dA, size_t(N1) * D * sizeof(float)));
+  CUDA_CHECK(cudaMalloc(&dB, size_t(N2) * D * sizeof(float)));
+  CUDA_CHECK(cudaMemcpy(dA, desc1.ptr<float>(), size_t(N1) * D * sizeof(float), cudaMemcpyHostToDevice));
+  CUDA_CHECK(cudaMemcpy(dB, desc2.ptr<float>(), size_t(N2) * D * sizeof(float), cudaMemcpyHostToDevice));
   const float alpha = 1.f, beta = 0.f;
   CUBLAS_CHECK(cublasSgemm(
-      handle, CUBLAS_OP_T, CUBLAS_OP_N, N1, N2, D, &alpha, d_A, D, d_B, D, &beta, d_scores, N1));  // column-major N1 x
-                                                                                                   // N2
+      h, CUBLAS_OP_T, CUBLAS_OP_N, N1, N2, D, &alpha, dA, D, dB, D, &beta, thrust::raw_pointer_cast(dS.data()), N1));
+  // (Optional) Tensor‑core GEMMEx with FP16: switch here.
 
-  // -------------------- 2) Argmax rows & cols ------------------------------
-  {
-    const int threads = 256;
-    const size_t smem = threads * (sizeof(float) + sizeof(int));
-    argmaxKernelRows<<<N1, threads, smem>>>(d_scores, d_bestIdxRow, d_bestScoreRow, N1, N2);
-    CUDA_CHECK(cudaPeekAtLastError());
-    argmaxKernelCols<<<N2, threads, smem>>>(d_scores, d_bestIdxCol, d_bestScoreCol, N1, N2);
-    CUDA_CHECK(cudaDeviceSynchronize());
-  }
-
-  // -------------------- 3) Tentative list (GPU) ----------------------------
-  thrust::device_vector<int> d_pair_i(N1), d_pair_j(N1);
-  thrust::device_vector<int> d_M(1, 0);
-  {
-    const int block = 256;
-    const int grid = (N1 + block - 1) / block;
-    buildTentativePairs<<<grid, block>>>(d_bestIdxRow,
-                                         d_bestScoreRow,
-                                         d_bestScoreCol,
-                                         N1,
-                                         N2,
-                                         min_cossim,
-                                         thrust::raw_pointer_cast(d_pair_i.data()),
-                                         thrust::raw_pointer_cast(d_pair_j.data()),
-                                         thrust::raw_pointer_cast(d_M.data()));
-    CUDA_CHECK(cudaDeviceSynchronize());
-  }
-  int M = 0;
-  CUDA_CHECK(cudaMemcpy(&M, thrust::raw_pointer_cast(d_M.data()), sizeof(int), cudaMemcpyDeviceToHost));
-  if (M < min_inliers) {
-    res.H = cv::Mat::eye(3, 3, CV_32F);
-    return res;
-  }
-
-  // Build M correspondence buffers
-  thrust::device_vector<float2> d_p1(M), d_p2(M);
-  {
-    std::vector<int> hi(M), hj(M);
-    CUDA_CHECK(
-        cudaMemcpy(hi.data(), thrust::raw_pointer_cast(d_pair_i.data()), M * sizeof(int), cudaMemcpyDeviceToHost));
-    CUDA_CHECK(
-        cudaMemcpy(hj.data(), thrust::raw_pointer_cast(d_pair_j.data()), M * sizeof(int), cudaMemcpyDeviceToHost));
-    std::vector<float2> h1(M), h2(M);
-    for (int m = 0; m < M; ++m) {
-      h1[m] = toFloat2(kpts1[hi[m]]);
-      h2[m] = toFloat2(kpts2[hj[m]]);
-    }
-    CUDA_CHECK(
-        cudaMemcpy(thrust::raw_pointer_cast(d_p1.data()), h1.data(), M * sizeof(float2), cudaMemcpyHostToDevice));
-    CUDA_CHECK(
-        cudaMemcpy(thrust::raw_pointer_cast(d_p2.data()), h2.data(), M * sizeof(float2), cudaMemcpyHostToDevice));
-  }
-
-  // -------------------- 4) GPU RANSAC on tentative set ---------------------
-  Homography H_best;
-  {
-    // 4.1 sample
-    thrust::device_vector<int> d_samples(ransac_iters * 4);
-    thrust::device_vector<curandStatePhilox4_32_10_t> d_states(ransac_iters);
-    initCurand<<<(ransac_iters + 255) / 256, 256>>>(thrust::raw_pointer_cast(d_states.data()), 123456ULL);
-    sampleMinimalSets<<<(ransac_iters + 255) / 256, 256>>>(
-        thrust::raw_pointer_cast(d_states.data()), thrust::raw_pointer_cast(d_samples.data()), ransac_iters, M);
-    CUDA_CHECK(cudaDeviceSynchronize());
-
-    // 4.2 build systems
-    thrust::device_vector<float> d_A8(ransac_iters * 64);
-    thrust::device_vector<float> d_b8(ransac_iters * 8);
-    buildLinearSystems8x8<<<(ransac_iters + 255) / 256, 256>>>(thrust::raw_pointer_cast(d_p1.data()),
-                                                               thrust::raw_pointer_cast(d_p2.data()),
-                                                               thrust::raw_pointer_cast(d_pair_i.data()),
-                                                               thrust::raw_pointer_cast(d_pair_j.data()),
-                                                               thrust::raw_pointer_cast(d_samples.data()),
-                                                               thrust::raw_pointer_cast(d_A8.data()),
-                                                               thrust::raw_pointer_cast(d_b8.data()),
-                                                               ransac_iters);
-    CUDA_CHECK(cudaDeviceSynchronize());
-
-    // 4.3 batched LU / solve (cuBLAS)
-    float **d_A_ptrs = nullptr, **d_b_ptrs = nullptr;
-    CUDA_CHECK(cudaMalloc(&d_A_ptrs, ransac_iters * sizeof(float*)));
-    CUDA_CHECK(cudaMalloc(&d_b_ptrs, ransac_iters * sizeof(float*)));
-    {
-      std::vector<float*> hA(ransac_iters), hB(ransac_iters);
-      for (int i = 0; i < ransac_iters; ++i) {
-        hA[i] = thrust::raw_pointer_cast(d_A8.data()) + i * 64;
-        hB[i] = thrust::raw_pointer_cast(d_b8.data()) + i * 8;
-      }
-      CUDA_CHECK(cudaMemcpy(d_A_ptrs, hA.data(), ransac_iters * sizeof(float*), cudaMemcpyHostToDevice));
-      CUDA_CHECK(cudaMemcpy(d_b_ptrs, hB.data(), ransac_iters * sizeof(float*), cudaMemcpyHostToDevice));
-    }
-    thrust::device_vector<int> d_info(ransac_iters);
-    thrust::device_vector<int> d_piv(ransac_iters * 8);
-
-    CUBLAS_CHECK(cublasSgetrfBatched(handle,
-                                     8,
-                                     d_A_ptrs,
-                                     8,
-                                     thrust::raw_pointer_cast(d_piv.data()),
-                                     thrust::raw_pointer_cast(d_info.data()),
-                                     ransac_iters));
-    std::vector<int> h_info_rf(ransac_iters);
-    CUDA_CHECK(cudaMemcpy(
-        h_info_rf.data(), thrust::raw_pointer_cast(d_info.data()), ransac_iters * sizeof(int), cudaMemcpyDeviceToHost));
-
-    std::vector<int> h_info_rs(ransac_iters, 0);
-    CUBLAS_CHECK(cublasSgetrsBatched(handle,
-                                     CUBLAS_OP_N,
-                                     8,
-                                     1,
-                                     (const float**)d_A_ptrs,
-                                     8,
-                                     thrust::raw_pointer_cast(d_piv.data()),
-                                     d_b_ptrs,
-                                     8,
-                                     h_info_rs.data(),
-                                     ransac_iters));
-
-    CUDA_CHECK(cudaFree(d_A_ptrs));
-    CUDA_CHECK(cudaFree(d_b_ptrs));
-
-    // 4.4 pack + score
-    thrust::device_vector<Homography> d_Hs(ransac_iters);
-    packHomographies<<<(ransac_iters + 255) / 256, 256>>>(
-        thrust::raw_pointer_cast(d_b8.data()), thrust::raw_pointer_cast(d_Hs.data()), ransac_iters);
-
-    thrust::device_vector<unsigned char> d_valid(ransac_iters, 0);
-
-    // call the validation kernel
-    {
-      const int threads = 256;
-      const int blocks = (ransac_iters + threads - 1) / threads;
-
-      float max_aniso = 4.0f;      // tune
-      float max_scale = 100.0f;    // tune
-      float min_den = 1e-4f;       // tune (avoid division blowups)
-      float cond_frob_max = 1e6f;  // tune
-      int samples_side = 3;
-
-      Homography Hpred_dev = toHomography(predicted_H);  // pack to struct
-
-      validateHomographiesKernel<<<blocks, threads>>>(thrust::raw_pointer_cast(d_Hs.data()),
-                                                      ransac_iters,
-                                                      (float)img_width,
-                                                      (float)img_height,
-                                                      max_aniso,
-                                                      max_scale,
-                                                      min_den,
-                                                      cond_frob_max,
-                                                      Hpred_dev,
-                                                      /*max_frob_gap=*/0.15f,   // tune
-                                                      /*max_reproj_gap=*/3.0f,  // px, tune
-                                                      /*samples_per_side=*/3,
-                                                      thrust::raw_pointer_cast(d_valid.data()));
-
-      CUDA_CHECK(cudaDeviceSynchronize());
-    }
-
-    thrust::device_vector<int> d_counts(ransac_iters, 0);
-    scoreHypotheses<<<ransac_iters, 256, sizeof(int)>>>(thrust::raw_pointer_cast(d_Hs.data()),
-                                                        thrust::raw_pointer_cast(d_valid.data()),
-                                                        thrust::raw_pointer_cast(d_p1.data()),
-                                                        thrust::raw_pointer_cast(d_p2.data()),
-                                                        M,
-                                                        ransac_iters,
-                                                        ransac_thr_px * ransac_thr_px,
-                                                        thrust::raw_pointer_cast(d_counts.data()));
-    CUDA_CHECK(cudaDeviceSynchronize());
-
-    auto it_best = thrust::max_element(d_counts.begin(), d_counts.end());
-    int bestIdx = it_best - d_counts.begin();
-    CUDA_CHECK(cudaMemcpy(
-        &H_best, thrust::raw_pointer_cast(d_Hs.data()) + bestIdx, sizeof(Homography), cudaMemcpyDeviceToHost));
-  }
-
-  // -------------------- 5) Local re‑matching around H*p1 -------------------
-  thrust::device_vector<float2> d_yhat(N1);
-  predictKernel<<<(N1 + 255) / 256, 256>>>(
-      H_best, thrust::raw_pointer_cast(d_pts1.data()), thrust::raw_pointer_cast(d_yhat.data()), N1);
+  // ---- Argmax + mutual ----
+  thrust::device_vector<int> dBestRow(N1), dBestCol(N2);
+  thrust::device_vector<float> dBestRowVal(N1), dBestColVal(N2);
+  const int T = 256;
+  size_t smem = T * (sizeof(float) + sizeof(int));
+  argmaxRows<<<N1, T, smem>>>(thrust::raw_pointer_cast(dS.data()),
+                              thrust::raw_pointer_cast(dBestRow.data()),
+                              thrust::raw_pointer_cast(dBestRowVal.data()),
+                              N1,
+                              N2);
+  argmaxCols<<<N2, T, smem>>>(thrust::raw_pointer_cast(dS.data()),
+                              thrust::raw_pointer_cast(dBestCol.data()),
+                              thrust::raw_pointer_cast(dBestColVal.data()),
+                              N1,
+                              N2);
   CUDA_CHECK(cudaDeviceSynchronize());
 
-  thrust::device_vector<int> d_row2col_new(N1);
-  thrust::device_vector<float> d_rowScore_new(N1);
-  {
-    const int threads = 256;
-    const size_t smem = threads * (sizeof(float) + sizeof(int));
-    localRematchKernel<<<N1, threads, smem>>>(d_scores,
-                                              thrust::raw_pointer_cast(d_pts2.data()),
-                                              thrust::raw_pointer_cast(d_yhat.data()),
-                                              N1,
-                                              N2,
-                                              local_radius_px * local_radius_px,
-                                              geo_lambda,
-                                              thrust::raw_pointer_cast(d_row2col_new.data()),
-                                              thrust::raw_pointer_cast(d_rowScore_new.data()));
-    CUDA_CHECK(cudaDeviceSynchronize());
+  thrust::device_vector<int> dPi(N1), dPj(N1), dM(1, 0);
+  thrust::device_vector<float> dPs(N1);
+  buildTentativePairs_mutual<<<(N1 + 255) / 256, 256>>>(thrust::raw_pointer_cast(dBestRow.data()),
+                                                        thrust::raw_pointer_cast(dBestCol.data()),
+                                                        thrust::raw_pointer_cast(dBestRowVal.data()),
+                                                        thrust::raw_pointer_cast(dBestColVal.data()),
+                                                        N1,
+                                                        N2,
+                                                        min_cossim,
+                                                        thrust::raw_pointer_cast(dPi.data()),
+                                                        thrust::raw_pointer_cast(dPj.data()),
+                                                        thrust::raw_pointer_cast(dPs.data()),
+                                                        thrust::raw_pointer_cast(dM.data()));
+  CUDA_CHECK(cudaDeviceSynchronize());
+  int M;
+  CUDA_CHECK(cudaMemcpy(&M, thrust::raw_pointer_cast(dM.data()), sizeof(int), cudaMemcpyDeviceToHost));
+  if (M < 8) {
+    CUBLAS_CHECK(cublasDestroy(h));
+    CUDA_CHECK(cudaFree(dA));
+    CUDA_CHECK(cudaFree(dB));
+    return {};
   }
 
-  // Build new (i,j) pool
-  thrust::device_vector<unsigned char> d_accept(N1);
-  thrust::transform(d_row2col_new.begin(), d_row2col_new.end(), d_accept.begin(), NonNegToMask());
+  // ---- Keep top-M by score ----
+  int keep = std::min(M, M_MAX);
+  thrust::device_vector<int> order(M);
+  thrust::sequence(order.begin(), order.end());
+  thrust::sort_by_key(dPs.begin(), dPs.begin() + M, order.begin(), thrust::greater<float>());
+  thrust::device_vector<int> dPiK(keep), dPjK(keep);
+  thrust::gather(order.begin(), order.begin() + keep, dPi.begin(), dPiK.begin());
+  thrust::gather(order.begin(), order.begin() + keep, dPj.begin(), dPjK.begin());
+  M = keep;
 
-  int M2 = thrust::count_if(d_accept.begin(), d_accept.end(), IsNonZeroMask());
-
-  thrust::device_vector<int> d_pair_i2(M2), d_pair_j2(M2);
+  // ---- Pack normalized coords in pair order (length M) ----
+  thrust::device_vector<float2> dX1(M), dX2(M);
   {
-    thrust::device_vector<int> d_all_i(N1);
-    thrust::sequence(d_all_i.begin(), d_all_i.end(), 0);
-    auto end_it = thrust::copy_if(d_all_i.begin(), d_all_i.end(), d_accept.begin(), d_pair_i2.begin(), IsNonZero());
-    d_pair_i2.resize(end_it - d_pair_i2.begin());
-    thrust::gather(d_pair_i2.begin(), d_pair_i2.end(), d_row2col_new.begin(), d_pair_j2.begin());
+    thrust::host_vector<int> hPi = dPiK, hPj = dPjK;
+    std::vector<float2> h1(M), h2(M);
+    bool norm = (fx > 0 && fy > 0);
+    for (int m = 0; m < M; ++m) {
+      auto p = kpts1_px[hPi[m]];
+      auto q = kpts2_px[hPj[m]];
+      h1[m] = norm ? float2{(p.x - cx) / fx, (p.y - cy) / fy} : float2{p.x, p.y};
+      h2[m] = norm ? float2{(q.x - cx) / fx, (q.y - cy) / fy} : float2{q.x, q.y};
+    }
+    CUDA_CHECK(cudaMemcpy(thrust::raw_pointer_cast(dX1.data()), h1.data(), M * sizeof(float2), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(thrust::raw_pointer_cast(dX2.data()), h2.data(), M * sizeof(float2), cudaMemcpyHostToDevice));
   }
 
-  // build correspondence buffers for the new pool
-  thrust::device_vector<float2> d_p1_new(M2), d_p2_new(M2);
-  thrust::gather(d_pair_i2.begin(), d_pair_i2.end(), d_pts1.begin(), d_p1_new.begin());
-  thrust::gather(d_pair_j2.begin(), d_pair_j2.end(), d_pts2.begin(), d_p2_new.begin());
-
-  // -------------------- 6) Inlier retrieval on the new pool ----------------
-  Homography H_inv;
+  // ---- Pre-sample subset indices for Stage-A ----
+  thrust::device_vector<int> dSubset(S);
   {
-    cv::Mat Hcv = (cv::Mat_<float>(3, 3) << H_best.h[0],
-                   H_best.h[1],
-                   H_best.h[2],
-                   H_best.h[3],
-                   H_best.h[4],
-                   H_best.h[5],
-                   H_best.h[6],
-                   H_best.h[7],
-                   H_best.h[8]);
-    cv::Mat Hcvinv = Hcv.inv();
-    for (int r = 0, k = 0; r < 3; ++r)
-      for (int c = 0; c < 3; ++c, ++k) H_inv.h[k] = Hcvinv.at<float>(r, c);
+    thrust::host_vector<int> hIdx(S);
+    for (int i = 0; i < S; ++i) hIdx[i] = (i * 9973) % M;  // cheap pseudo-rand; or use curand once
+    dSubset = hIdx;
   }
 
-  thrust::device_vector<float> d_errs(M2);
+  // ---- Pre-sample minimal sets (8) from pool L ----
+  int poolL = std::min(L, M);
+  thrust::device_vector<int> dSamples(H * 8);
   {
-    const int threads = 256;
-    const int blocks = (M2 + threads - 1) / threads;
-    computeSymmetricErrKernel<<<blocks, threads>>>(H_best,
-                                                   H_inv,
-                                                   thrust::raw_pointer_cast(d_p1_new.data()),
-                                                   thrust::raw_pointer_cast(d_p2_new.data()),
-                                                   thrust::raw_pointer_cast(d_errs.data()),
-                                                   M2);
-    CUDA_CHECK(cudaDeviceSynchronize());
+    thrust::device_vector<curandStatePhilox4_32_10_t> dStates((H + 255) / 256 * 256);
+    initPhilox<<<(H + 255) / 256, 256>>>(thrust::raw_pointer_cast(dStates.data()), (unsigned long long)ransac_seed);
+    // Build on host for determinism/simple uniqueness
+    thrust::host_vector<int> hS(H * 8);
+    for (int hidx = 0; hidx < H; ++hidx) {
+      // simple unique sampling without replacement from [0..poolL)
+      int used[poolL > 8 ? 8 : poolL];
+      int u = 0;
+      for (int k = 0; k < 8; ++k) {
+        int v = (hidx * 131 + k * 37 + ransac_seed * 17 + k) % poolL;
+        // de-duplicate
+        bool ok = false;
+        for (int t = 0; t < poolL * 2 && !ok; ++t) {
+          v = (v + 1) % poolL;
+          ok = true;
+          for (int z = 0; z < u; ++z)
+            if (used[z] == v) {
+              ok = false;
+              break;
+            }
+        }
+        used[u++] = v;
+        hS[hidx * 8 + k] = v;
+      }
+    }
+    dSamples = hS;
   }
 
-  thrust::device_vector<unsigned char> d_mask(M2);
-  const float thr2 = 2.f * ransac_thr_px * ransac_thr_px;
-  thrust::transform(d_errs.begin(), d_errs.end(), d_mask.begin(), MarkInlier(thr2));
+  // ---- Stage-A: build+score (subset) ----
+  float fref = (fx > 0 && fy > 0) ? 0.5f * (fx + fy) : 1.f;
+  float thr2_norm = (fx > 0) ? (sampson_thr_px / fref) * (sampson_thr_px / fref) : (sampson_thr_px * sampson_thr_px);
+  // For Stage-A fast screening we scale subset threshold up slightly (be lenient):
+  float thr2_subset = thr2_norm * 4.f;
 
-  int K = thrust::count_if(d_mask.begin(), d_mask.end(), IsNonZeroMask());
+  thrust::device_vector<int> dCountsA(H, 0);
+  thrust::device_vector<float> dEbank(H * 9);
+  stageA_build_and_score<<<H, 128>>>(thrust::raw_pointer_cast(dX1.data()),
+                                     thrust::raw_pointer_cast(dX2.data()),
+                                     thrust::raw_pointer_cast(dSubset.data()),
+                                     S,
+                                     thrust::raw_pointer_cast(dSamples.data()),
+                                     poolL,
+                                     thr2_subset,
+                                     thrust::raw_pointer_cast(dCountsA.data()),
+                                     thrust::raw_pointer_cast(dEbank.data()));
+  CUDA_CHECK(cudaDeviceSynchronize());
 
-  thrust::device_vector<int> d_inlier_ids(K);
-  {
-    thrust::device_vector<int> d_all_ids(M2);
-    thrust::sequence(d_all_ids.begin(), d_all_ids.end(), 0);
-    auto end_it =
-        thrust::copy_if(d_all_ids.begin(), d_all_ids.end(), d_mask.begin(), d_inlier_ids.begin(), IsNonZeroMask());
-    d_inlier_ids.resize(end_it - d_inlier_ids.begin());
+  // ---- Pick top-K hyps ----
+  thrust::device_vector<int> hyps(H);
+  thrust::sequence(hyps.begin(), hyps.end(), 0);
+  thrust::sort_by_key(dCountsA.begin(), dCountsA.end(), hyps.begin(), thrust::greater<int>());
+  thrust::device_vector<int> finalists(K_KEEP);
+  thrust::copy(hyps.begin(), hyps.begin() + K_KEEP, finalists.begin());
+
+  // ---- Stage-B: enforce rank-2 and score fully ----
+  thrust::device_vector<int> dCountsB(K_KEEP, 0);
+  thrust::device_vector<float> dEfinal(K_KEEP * 9);
+  enforce_rank2_and_score<<<K_KEEP, 128>>>(thrust::raw_pointer_cast(dEbank.data()),
+                                           thrust::raw_pointer_cast(finalists.data()),
+                                           thrust::raw_pointer_cast(dX1.data()),
+                                           thrust::raw_pointer_cast(dX2.data()),
+                                           M,
+                                           thr2_norm,
+                                           thrust::raw_pointer_cast(dCountsB.data()),
+                                           thrust::raw_pointer_cast(dEfinal.data()));
+  CUDA_CHECK(cudaDeviceSynchronize());
+
+  // pick best
+  thrust::host_vector<int> hCountsB = dCountsB;
+  int bestK = 0;
+  for (int i = 1; i < K_KEEP; ++i)
+    if (hCountsB[i] > hCountsB[bestK]) bestK = i;
+
+  // ---- Build inlier mask for best and return pairs ----
+  thrust::host_vector<float> hEbest(9);
+  CUDA_CHECK(cudaMemcpy(
+      hEbest.data(), thrust::raw_pointer_cast(dEfinal.data()) + 9 * bestK, 9 * sizeof(float), cudaMemcpyDeviceToHost));
+  auto Ecv = (cv::Mat_<float>(3, 3) << hEbest[0],
+              hEbest[1],
+              hEbest[2],
+              hEbest[3],
+              hEbest[4],
+              hEbest[5],
+              hEbest[6],
+              hEbest[7],
+              hEbest[8]);
+
+  // mask on host (K small; for speed you can add a device kernel)
+  thrust::host_vector<float2> hX1 = dX1, hX2 = dX2;
+  std::vector<std::pair<int, int>> inliers;
+  inliers.reserve(M);
+  for (int m = 0; m < M; ++m) {
+    float x = hX1[m].x, y = hX1[m].y, X = hX2[m].x, Y = hX2[m].y;
+    float e11 = hEbest[0], e12 = hEbest[1], e13 = hEbest[2], e21 = hEbest[3], e22 = hEbest[4], e23 = hEbest[5],
+          e31 = hEbest[6], e32 = hEbest[7], e33 = hEbest[8];
+    float Ex1u = e11 * x + e12 * y + e13, Ex1v = e21 * x + e22 * y + e23, Ex1w = e31 * x + e32 * y + e33;
+    float num = X * Ex1u + Y * Ex1v + Ex1w;
+    float Etxu = e11 * X + e21 * Y + e31, Etyv = e12 * X + e22 * Y + e32;
+    float den = Ex1u * Ex1u + Ex1v * Ex1v + Etxu * Etxu + Etyv * Etyv;
+    float d2 = (num * num) / std::max(den, 1e-12f);
+    if (d2 <= thr2_norm) inliers.emplace_back(/*i*/ 0, /*j*/ 0);  // filled below
+  }
+  // Map back to original indices
+  thrust::host_vector<int> hPiK = dPiK, hPjK = dPjK;
+  inliers.clear();
+  inliers.reserve(M);
+  for (int m = 0; m < M; ++m) {
+    float x = hX1[m].x, y = hX1[m].y, X = hX2[m].x, Y = hX2[m].y;
+    float e11 = hEbest[0], e12 = hEbest[1], e13 = hEbest[2], e21 = hEbest[3], e22 = hEbest[4], e23 = hEbest[5],
+          e31 = hEbest[6], e32 = hEbest[7], e33 = hEbest[8];
+    float Ex1u = e11 * x + e12 * y + e13, Ex1v = e21 * x + e22 * y + e23, Ex1w = e31 * x + e32 * y + e33;
+    float num = X * Ex1u + Y * Ex1v + Ex1w;
+    float Etxu = e11 * X + e21 * Y + e31, Etyv = e12 * X + e22 * Y + e32;
+    float den = Ex1u * Ex1u + Ex1v * Ex1v + Etxu * Etxu + Etyv * Etyv;
+    float d2 = (num * num) / std::max(den, 1e-12f);
+    if (d2 <= thr2_norm) inliers.emplace_back(hPiK[m], hPjK[m]);
   }
 
-  thrust::device_vector<int> d_inlier_i(K), d_inlier_j(K);
-  thrust::gather(d_inlier_ids.begin(), d_inlier_ids.end(), d_pair_i2.begin(), d_inlier_i.begin());
-  thrust::gather(d_inlier_ids.begin(), d_inlier_ids.end(), d_pair_j2.begin(), d_inlier_j.begin());
+  CUBLAS_CHECK(cublasDestroy(h));
+  CUDA_CHECK(cudaFree(dA));
+  CUDA_CHECK(cudaFree(dB));
 
-  std::vector<int> hi(K), hj(K);
-  thrust::copy(d_inlier_i.begin(), d_inlier_i.end(), hi.begin());
-  thrust::copy(d_inlier_j.begin(), d_inlier_j.end(), hj.begin());
-
-  // -------------------- 7) (Optional) LS refine on K inliers ----------------
-  // TODO: add an 8x8 normal-equation solve here to re-estimate H_best if you want.
-  // (Kept out to keep this function compact.)
-
-  // -------------------- 8) Return ------------------------------------------
-  res.matches.reserve(K);
-  for (int n = 0; n < K; ++n) res.matches.emplace_back(hi[n], hj[n]);
-  res.H = (cv::Mat_<float>(3, 3) << H_best.h[0],
-           H_best.h[1],
-           H_best.h[2],
-           H_best.h[3],
-           H_best.h[4],
-           H_best.h[5],
-           H_best.h[6],
-           H_best.h[7],
-           H_best.h[8]);
-  return res;
+  EResult r;
+  r.matches = std::move(inliers);
+  return r;
 }
 
 }  // namespace xfeat

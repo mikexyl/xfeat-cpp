@@ -181,39 +181,14 @@ int main(int argc, char* argv[]) {
     }
     cv::Mat H = cv::Mat::eye(3, 3, CV_64F);  // 3x3 identity, double precision
 
-    auto gpu_matches = gpu_matcher.match_mkpts_gpuRansac(result1.descriptors,
-                                                         result2.descriptors,
-                                                         keypoints1,
-                                                         keypoints2,
-                                                         image1.size(),
-                                                         H,
-                                                         0.4,
-                                                         3.0f,
-                                                         64,
-                                                         100,
-                                                         8,
-                                                         1e-3);
+    float fx = 377.229, fy = 377.4866, cx = 326.3518, cy = 239.6597;
+
     auto t_start = std::chrono::high_resolution_clock::now();
-    gpu_matches = gpu_matcher.match_mkpts_gpuRansac(result1.descriptors,
-                                                    result2.descriptors,
-                                                    keypoints1,
-                                                    keypoints2,
-                                                    image1.size(),
-                                                    H,
-                                                    0.6,
-                                                    3.0f,
-                                                    128,
-                                                    100,
-                                                    8,
-                                                    1e-2);
+    std::vector<cv::DMatch> matches = gpu_matcher.match_gpuRansac(result1, result2, 0.4f, 512, fx, fy, cx, cy);
+    // matches = gpu_matcher.match(result1, result2, 0.4, H, 50);
     auto t_end = std::chrono::high_resolution_clock::now();
     match_timing_stats["gpu_match_mkpts_gpuRansac"] =
         std::chrono::duration<double, std::milli>(t_end - t_start).count();
-    auto matches_indices = gpu_matches.matches;
-    std::vector<cv::DMatch> matches;
-    for (auto match : matches_indices) {
-      matches.emplace_back(match.first, match.second, 0.0f);
-    }
 
     for (auto stats : match_timing_stats) {
       std::cout << "Match timing stats: " << stats.first << ": " << stats.second << " ms" << std::endl;
