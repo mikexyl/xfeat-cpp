@@ -14,7 +14,7 @@ class XFeatCV : public cv::Feature2D {
   };
 
   XFeatCV(Ort::Env& env, const Params& params = Params())
-      : Feature2D(), env_(env), xfeat_onnx_(env, params), params_(params) {}
+      : Feature2D(), env_(env), params_(params), xfeat_onnx_(env, params) {}
 
   // Factory method to create an instance of XFeatCV
   static cv::Ptr<XFeatCV> create(Ort::Env& env, const Params& params) { return Ptr<XFeatCV>(new XFeatCV(env, params)); }

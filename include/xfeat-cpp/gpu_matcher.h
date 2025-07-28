@@ -97,8 +97,10 @@ class CuMatcher {
     if (not H.empty() and inlier_indices1.size() < result1.keypoints.rows * 0.8) {
       std::vector<cv::Point2f> kpts1_warped;
       cv::perspectiveTransform(keypoints1, kpts1_warped, H);
+      int local_search_radius = search_radius * 0.05;          // e.g. 3.0 for search_radius=60
+      local_search_radius = std::max(local_search_radius, 5);  // Ensure it's at least 5
       auto [rematch_id1, rematch_id2] = this->match_mkpts_local(
-          result1.descriptors, result2.descriptors, kpts1_warped, keypoints2, search_radius * 0.05, min_sim);
+          result1.descriptors, result2.descriptors, kpts1_warped, keypoints2, local_search_radius, min_sim);
 
       for (int i = 0; i < rematch_id1.size(); ++i) {
         if (rematch_id1[i] >= 0 && rematch_id2[i] >= 0) {
@@ -153,7 +155,7 @@ class CuMatcher {
                                                search_radius * 0.05,
                                                128,
                                                100,
-                                               search_radius* 0.05,
+                                               search_radius * 0.05,
                                                1e-2);
     std::vector<cv::DMatch> matches;
     for (const auto& match : indices.matches) {

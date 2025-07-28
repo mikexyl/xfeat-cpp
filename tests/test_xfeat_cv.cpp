@@ -21,6 +21,7 @@ class XFeatFullTestFixture : public ::testing::Test {
   std::unique_ptr<XfeatNetVLADONNX> xfeat_netvlad;
   std::unique_ptr<xfeat::HeadNetVLADONNX> head_netvlad;
   std::unique_ptr<xfeat::NetVLADONNX> netvlad;
+  std::unique_ptr<xfeat::LighterGlueCV> lighterglue;
   cv::Mat img_gray;
   cv::Mat img_color;
   std::shared_ptr<Ort::Env> env;
@@ -40,6 +41,12 @@ class XFeatFullTestFixture : public ::testing::Test {
                                                        "/workspaces/src/xfeat-cpp/onnx_model/xfeat_nv.onnx",
                                                        "/workspaces/src/xfeat-cpp/onnx_model/netvlad.onnx",
                                                        true);
+    lighterglue = std::make_unique<xfeat::LighterGlueCV>(
+        *env,
+        xfeat::LighterGlueCV::Params{.model_path = "/workspaces/src/xfeat-cpp/onnx_model/lg_640x480_500.onnx",
+                                     .use_gpu = true,
+                                     .min_score = -1,
+                                     .n_kpts = 500});
     img_gray = imread(getTestImagePath("sample1.jpg"), IMREAD_GRAYSCALE);
     img_color = imread(getTestImagePath("sample2.jpg"), IMREAD_COLOR);
   }
@@ -133,3 +140,5 @@ class XFeatFullTestFixture : public ::testing::Test {
 TEST_F(XFeatFullTestFixture, XfeatWarmup) { xfeat->warmup(); }
 
 TEST_F(XFeatFullTestFixture, XfeatNetVLADWarmup) { xfeat_netvlad->warmup(); }
+
+TEST_F(XFeatFullTestFixture, LighterGlueWarmup) { lighterglue->warmup(); }
