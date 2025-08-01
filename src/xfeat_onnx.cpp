@@ -37,10 +37,14 @@ XFeatONNX::XFeatONNX(Ort::Env& env,
 
     auto available_providers = Ort::GetAvailableProviders();
     bool cuda_available = false;
+
+    // print available providers
+    std::cout << "Available ONNX Runtime providers: ";
+
     for (const auto& provider : available_providers) {
+      std::cout << provider << " ";
       if (provider == "CUDAExecutionProvider") {
         cuda_available = true;
-        break;
       }
     }
 
@@ -48,6 +52,12 @@ XFeatONNX::XFeatONNX(Ort::Env& env,
       std::cerr << "Error: CUDAExecutionProvider is not available. Terminating." << std::endl;
       throw std::runtime_error("CUDAExecutionProvider not found.");
     }
+
+    // Append TensorRT provider with default options
+    OrtTensorRTProviderOptions trt_options;
+    trt_options.trt_engine_cache_enable = 1;
+    trt_options.trt_engine_cache_path = "./trt_engine_cache";
+    session_options_.AppendExecutionProvider_TensorRT(trt_options);
 
     OrtCUDAProviderOptions cuda_options{};
     session_options_.AppendExecutionProvider_CUDA(cuda_options);

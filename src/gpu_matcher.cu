@@ -410,12 +410,12 @@ std::tuple<std::vector<int>, std::vector<int>> CuMatcher::match_mkpts_local(cons
 }
 
 // ================== Tunables ==================
-static constexpr int H = 192;       // hypotheses
-static constexpr int L = 128;       // sample pool (top-L pairs)
-static constexpr int S = 96;        // Stage-A subset size
+static constexpr int H = 48;        // hypotheses
+static constexpr int L = 48;        // sample pool (top-L pairs)
+static constexpr int S = 48;        // Stage-A subset size
 static constexpr int K_KEEP = 16;   // finalists
-static constexpr int M_MAX = 384;   // cap tentative matches for speed
-static constexpr int J_SWEEPS = 8;  // Jacobi sweeps (9x9)
+static constexpr int M_MAX = 512;   // cap tentative matches for speed
+static constexpr int J_SWEEPS = 4;  // Jacobi sweeps (9x9)
 
 // ================== Argmax (row/col) ==========
 __global__ void argmaxRows(const float* scores, int* idx, float* val, int N1, int N2) {
@@ -906,17 +906,24 @@ EResult CuMatcher::match_mkpts_gpuRansac_E(const cv::Mat& desc1,
   assert((int)kpts1_px.size() == N1 && (int)kpts2_px.size() == N2);
 
   // ---- BF cosine with cuBLAS ----
-  cublasHandle_t h;
-  CUBLAS_CHECK(cublasCreate(&h));
   thrust::device_vector<float> dS(N1 * N2);
-  float *dA = nullptr, *dB = nullptr;
-  CUDA_CHECK(cudaMalloc(&dA, size_t(N1) * D * sizeof(float)));
-  CUDA_CHECK(cudaMalloc(&dB, size_t(N2) * D * sizeof(float)));
-  CUDA_CHECK(cudaMemcpy(dA, desc1.ptr<float>(), size_t(N1) * D * sizeof(float), cudaMemcpyHostToDevice));
-  CUDA_CHECK(cudaMemcpy(dB, desc2.ptr<float>(), size_t(N2) * D * sizeof(float), cudaMemcpyHostToDevice));
+  CUDA_CHECK(cudaMemcpy(d_A, desc1.ptr<float>(), size_t(N1) * D * sizeof(float), cudaMemcpyHostToDevice));
+  CUDA_CHECK(cudaMemcpy(d_B, desc2.ptr<float>(), size_t(N2) * D * sizeof(float), cudaMemcpyHostToDevice));
   const float alpha = 1.f, beta = 0.f;
-  CUBLAS_CHECK(cublasSgemm(
-      h, CUBLAS_OP_T, CUBLAS_OP_N, N1, N2, D, &alpha, dA, D, dB, D, &beta, thrust::raw_pointer_cast(dS.data()), N1));
+  CUBLAS_CHECK(cublasSgemm(handle,
+                           CUBLAS_OP_T,
+                           CUBLAS_OP_N,
+                           N1,
+                           N2,
+                           D,
+                           &alpha,
+                           d_A,
+                           D,
+                           d_B,
+                           D,
+                           &beta,
+                           thrust::raw_pointer_cast(dS.data()),
+                           N1));
   // (Optional) Tensor‑core GEMMEx with FP16: switch here.
 
   // ---- Argmax + mutual ----
@@ -934,7 +941,6 @@ EResult CuMatcher::match_mkpts_gpuRansac_E(const cv::Mat& desc1,
                               thrust::raw_pointer_cast(dBestColVal.data()),
                               N1,
                               N2);
-  CUDA_CHECK(cudaDeviceSynchronize());
 
   thrust::device_vector<int> dPi(N1), dPj(N1), dM(1, 0);
   thrust::device_vector<float> dPs(N1);
@@ -953,9 +959,6 @@ EResult CuMatcher::match_mkpts_gpuRansac_E(const cv::Mat& desc1,
   int M;
   CUDA_CHECK(cudaMemcpy(&M, thrust::raw_pointer_cast(dM.data()), sizeof(int), cudaMemcpyDeviceToHost));
   if (M < 8) {
-    CUBLAS_CHECK(cublasDestroy(h));
-    CUDA_CHECK(cudaFree(dA));
-    CUDA_CHECK(cudaFree(dB));
     return {};
   }
 
@@ -1074,7 +1077,7 @@ EResult CuMatcher::match_mkpts_gpuRansac_E(const cv::Mat& desc1,
   thrust::host_vector<float> hEbest(9);
   CUDA_CHECK(cudaMemcpy(
       hEbest.data(), thrust::raw_pointer_cast(dEfinal.data()) + 9 * bestK, 9 * sizeof(float), cudaMemcpyDeviceToHost));
-  auto Ecv = (cv::Mat_<float>(3, 3) << hEbest[0],
+  cv::Mat Ecv = (cv::Mat_<float>(3, 3) << hEbest[0],
               hEbest[1],
               hEbest[2],
               hEbest[3],
@@ -1115,12 +1118,9 @@ EResult CuMatcher::match_mkpts_gpuRansac_E(const cv::Mat& desc1,
     if (d2 <= thr2_norm) inliers.emplace_back(hPiK[m], hPjK[m]);
   }
 
-  CUBLAS_CHECK(cublasDestroy(h));
-  CUDA_CHECK(cudaFree(dA));
-  CUDA_CHECK(cudaFree(dB));
-
   EResult r;
   r.matches = std::move(inliers);
+  r.E = Ecv;
   return r;
 }
 

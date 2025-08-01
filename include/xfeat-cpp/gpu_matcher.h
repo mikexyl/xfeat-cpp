@@ -144,7 +144,8 @@ class CuMatcher {
                                           float fx,
                                           float fy,
                                           float cx,
-                                          float cy) {
+                                          float cy,
+                                          cv::Mat* E = nullptr) {
     std::vector<cv::Point2f> keypoints1, keypoints2;
     for (int i = 0; i < result1.keypoints.rows; ++i) {
       keypoints1.emplace_back(result1.keypoints.at<float>(i, 0), result1.keypoints.at<float>(i, 1));
@@ -155,6 +156,9 @@ class CuMatcher {
 
     auto indices = this->match_mkpts_gpuRansac_E(
         result1.descriptors, result2.descriptors, keypoints1, keypoints2, min_sim, 3.5, ransac_seed, fx, fy, cx, cy);
+    if (E) {
+      *E = indices.E;  // copy the essential matrix if provided
+    }
     std::cout << "Number of matches: " << indices.matches.size() << std::endl;
 
     std::vector<cv::DMatch> matches;

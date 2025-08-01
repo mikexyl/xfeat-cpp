@@ -184,7 +184,8 @@ int main(int argc, char* argv[]) {
     float fx = 377.229, fy = 377.4866, cx = 326.3518, cy = 239.6597;
 
     auto t_start = std::chrono::high_resolution_clock::now();
-    std::vector<cv::DMatch> matches = gpu_matcher.match_gpuRansac(result1, result2, 0.4f, 512, fx, fy, cx, cy);
+    cv::Mat E;
+    std::vector<cv::DMatch> matches = gpu_matcher.match_gpuRansac(result1, result2, 0.4f, 512, fx, fy, cx, cy, &E);
     // matches = gpu_matcher.match(result1, result2, 0.4, H, 50);
     auto t_end = std::chrono::high_resolution_clock::now();
     match_timing_stats["gpu_match_mkpts_gpuRansac"] =
