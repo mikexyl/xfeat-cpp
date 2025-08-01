@@ -131,188 +131,214 @@ int main(int argc, char* argv[]) {
     return 1;
   }
 
+  Ort::Env env(ORT_LOGGING_LEVEL_WARNING, "xfeat-shared-env");
+  auto lighterglue = std::make_unique<LighterGlueOnnx>(env, lighterglue_model_path.string(),
+                                                       true);  // Use GPU
+
+  XFeatONNX xfeat_onnx(env,
+                       XFeatONNX::Params{
+                           .xfeat_path = xfeat_model_path.string(),
+                           .interp_bilinear_path = interp_bilinear_path.string(),
+                           .interp_bicubic_path = interp_bicubic_path.string(),
+                           .interp_nearest_path = interp_nearest_path.string(),
+                           .use_gpu = true,
+                           .nkpts = max_kpts,
+                           .matcher_type = MatcherType::GPU_BF,
+                       },
+                       std::move(lighterglue));
+
+  xfeat::CuMatcher gpu_matcher;
+  gpu_matcher.init(max_kpts, max_kpts, 64);
+
+  // warm up the model
+  DetectionResult result1, result2;
   try {
-    Ort::Env env(ORT_LOGGING_LEVEL_WARNING, "xfeat-shared-env");
-    auto lighterglue = std::make_unique<LighterGlueOnnx>(env, lighterglue_model_path.string(),
-                                                         true);  // Use GPU
+    result1 = xfeat_onnx.detect_and_compute(image1, max_kpts, nullptr, {}, {}, nullptr);
+  } catch (const Ort::Exception& e) {
+    std::cerr << "ONNX Runtime Exception during warmup: " << e.what() << std::endl;
+    return 1;
+  }
+  try {
+    result2 = xfeat_onnx.detect_and_compute(image2, max_kpts, nullptr, {}, {}, nullptr);
+  } catch (const Ort::Exception& e) {
+    std::cerr << "ONNX Runtime Exception during warmup: " << e.what() << std::endl;
+    return 1;
+  }
 
-    XFeatONNX xfeat_onnx(env,
-                         XFeatONNX::Params{
-                             .xfeat_path = xfeat_model_path.string(),
-                             .interp_bilinear_path = interp_bilinear_path.string(),
-                             .interp_bicubic_path = interp_bicubic_path.string(),
-                             .interp_nearest_path = interp_nearest_path.string(),
-                             .use_gpu = true,
-                             .nkpts = max_kpts,
-                             .matcher_type = MatcherType::GPU_BF,
-                         },
-                         std::move(lighterglue));
+  auto start = std::chrono::high_resolution_clock::now();
+  TimingStats timing_stats;
+  cv::Mat heatmap1, heatmap2;
+  std::vector<cv::Vec2d> std1;
+  std::vector<cv::Vec2d> std2;
+  result1 = xfeat_onnx.detect_and_compute(image1, max_kpts, &heatmap1, {}, {}, &std1);
+  result2 = xfeat_onnx.detect_and_compute(image2, max_kpts, &heatmap2, {}, {}, &std2);
+  auto end = std::chrono::high_resolution_clock::now();
+  std::chrono::duration<double, std::milli> duration = end - start;
+  std::cout << "xfeat_onnx detection on 2 images (size: " << image1.cols << "x" << image1.rows << ") took "
+            << duration.count() << "ms." << std::endl;
 
-    xfeat::CuMatcher gpu_matcher;
-    gpu_matcher.init(max_kpts, max_kpts, 64);
+  // Compare with OpenCV's goodFeaturesToTrack
+  auto opencv_start = std::chrono::high_resolution_clock::now();
+  std::vector<cv::Point2f> opencv_corners1, opencv_corners2;
+  cv::goodFeaturesToTrack(image1, opencv_corners1, 500, 0.01, 10, cv::Mat(), 3, false, 0.04);
+  cv::goodFeaturesToTrack(image2, opencv_corners2, 500, 0.01, 10, cv::Mat(), 3, false, 0.04);
+  auto opencv_end = std::chrono::high_resolution_clock::now();
+  std::chrono::duration<double, std::milli> opencv_duration = opencv_end - opencv_start;
+  std::cout << "OpenCV goodFeaturesToTrack on 2 images (size: " << image1.cols << "x" << image1.rows << ") took "
+            << opencv_duration.count() << "ms." << std::endl;
+  std::cout << "OpenCV detected corners: image1=" << opencv_corners1.size() << ", image2=" << opencv_corners2.size() << std::endl;
 
-    // warm up the model
-    auto result1 = xfeat_onnx.detect_and_compute(image1, max_kpts, nullptr, {}, {}, nullptr);
-    auto result2 = xfeat_onnx.detect_and_compute(image2, max_kpts, nullptr, {}, {}, nullptr);
-    xfeat_onnx.match(result1, result2, image1, min_cos, nullptr);
+  // Also compare with ORB detector for feature detection + description
+  auto orb_start = std::chrono::high_resolution_clock::now();
+  cv::Ptr<cv::ORB> orb = cv::ORB::create(500);
+  std::vector<cv::KeyPoint> orb_keypoints1, orb_keypoints2;
+  cv::Mat orb_descriptors1, orb_descriptors2;
+  orb->detectAndCompute(image1, cv::noArray(), orb_keypoints1, orb_descriptors1);
+  orb->detectAndCompute(image2, cv::noArray(), orb_keypoints2, orb_descriptors2);
+  auto orb_end = std::chrono::high_resolution_clock::now();
+  std::chrono::duration<double, std::milli> orb_duration = orb_end - orb_start;
+  std::cout << "OpenCV ORB detectAndCompute on 2 images (size: " << image1.cols << "x" << image1.rows << ") took "
+            << orb_duration.count() << "ms." << std::endl;
+  std::cout << "ORB detected keypoints: image1=" << orb_keypoints1.size() << ", image2=" << orb_keypoints2.size() << std::endl;
 
-    auto start = std::chrono::high_resolution_clock::now();
-    TimingStats timing_stats;
-    cv::Mat heatmap1, heatmap2;
-    std::vector<cv::Vec2d> std1;
-    std::vector<cv::Vec2d> std2;
-    result1 = xfeat_onnx.detect_and_compute(image1, max_kpts, &heatmap1, {}, {}, &std1);
-    result2 = xfeat_onnx.detect_and_compute(image2, max_kpts, &heatmap2, {}, {}, &std2);
-    auto end = std::chrono::high_resolution_clock::now();
-    std::chrono::duration<double, std::milli> duration = end - start;
-    std::cout << "xfeat_onnx detection on 2 images (size: " << image1.cols << "x" << image1.rows << ") took "
-              << duration.count() << "ms." << std::endl;
-    std::vector<std::vector<int>> self_neighbours1, self_neighbours2;
+  std::vector<std::vector<int>> self_neighbours1, self_neighbours2;
 
-    // lighterglue->match(result1, image1.size(), result2, image2.size(), matches);
+  // lighterglue->match(result1, image1.size(), result2, image2.size(), matches);
 
-    xfeat::TimingStats match_timing_stats;
-    std::vector<cv::Point2f> keypoints1, keypoints2;
+  xfeat::TimingStats match_timing_stats;
+  std::vector<cv::Point2f> keypoints1, keypoints2;
+  for (int i = 0; i < result1.keypoints.rows; ++i) {
+    keypoints1.emplace_back(result1.keypoints.at<float>(i, 0), result1.keypoints.at<float>(i, 1));
+  }
+  for (int i = 0; i < result2.keypoints.rows; ++i) {
+    keypoints2.emplace_back(result2.keypoints.at<float>(i, 0), result2.keypoints.at<float>(i, 1));
+  }
+  cv::Mat H = cv::Mat::eye(3, 3, CV_64F);  // 3x3 identity, double precision
+
+  float fx = 377.229, fy = 377.4866, cx = 326.3518, cy = 239.6597;
+
+  auto t_start = std::chrono::high_resolution_clock::now();
+  cv::Mat E;
+  std::vector<cv::DMatch> matches = gpu_matcher.match_gpuRansac(result1, result2, 0.4f, 512, fx, fy, cx, cy, &E);
+  // matches = gpu_matcher.match(result1, result2, 0.4, H, 50);
+  auto t_end = std::chrono::high_resolution_clock::now();
+  match_timing_stats["gpu_match_mkpts_gpuRansac"] = std::chrono::duration<double, std::milli>(t_end - t_start).count();
+
+  for (auto stats : match_timing_stats) {
+    std::cout << "Match timing stats: " << stats.first << ": " << stats.second << " ms" << std::endl;
+  }
+
+  // print timing stats
+  std::cout << "Timing Stats:" << std::endl;
+  for (const auto& entry : timing_stats) {
+    std::cout << entry.first << ": " << entry.second << " ms" << std::endl;
+  }
+
+  // Draw matches using OpenCV's drawMatches
+  if (not matches.empty()) {
+    cv::Mat img1 = cv::imread(image1_path, cv::IMREAD_COLOR);
+    cv::Mat img2 = cv::imread(image2_path, cv::IMREAD_COLOR);
+
+    // draw self matches
+    for (size_t i = 0; i < self_neighbours1.size(); ++i) {
+      for (int j : self_neighbours1[i]) {
+        cv::line(img1,
+                 result1.keypoints.at<cv::Point2f>(i),
+                 result1.keypoints.at<cv::Point2f>(j),
+                 cv::Scalar(255, 255, 0),
+                 1);
+      }
+    }
+    for (size_t i = 0; i < self_neighbours2.size(); ++i) {
+      for (int j : self_neighbours2[i]) {
+        cv::line(img2,
+                 result2.keypoints.at<cv::Point2f>(i),
+                 result2.keypoints.at<cv::Point2f>(j),
+                 cv::Scalar(255, 255, 0),
+                 1);
+      }
+    }
+
+    std::cout << "Number of matches: " << matches.size() << std::endl;
+    cv::Mat out_img;
+
+    std::vector<cv::KeyPoint> kpts1, kpts2;
     for (int i = 0; i < result1.keypoints.rows; ++i) {
-      keypoints1.emplace_back(result1.keypoints.at<float>(i, 0), result1.keypoints.at<float>(i, 1));
+      kpts1.emplace_back(result1.keypoints.at<cv::Point2f>(i), 1);
     }
     for (int i = 0; i < result2.keypoints.rows; ++i) {
-      keypoints2.emplace_back(result2.keypoints.at<float>(i, 0), result2.keypoints.at<float>(i, 1));
-    }
-    cv::Mat H = cv::Mat::eye(3, 3, CV_64F);  // 3x3 identity, double precision
-
-    float fx = 377.229, fy = 377.4866, cx = 326.3518, cy = 239.6597;
-
-    auto t_start = std::chrono::high_resolution_clock::now();
-    cv::Mat E;
-    std::vector<cv::DMatch> matches = gpu_matcher.match_gpuRansac(result1, result2, 0.4f, 512, fx, fy, cx, cy, &E);
-    // matches = gpu_matcher.match(result1, result2, 0.4, H, 50);
-    auto t_end = std::chrono::high_resolution_clock::now();
-    match_timing_stats["gpu_match_mkpts_gpuRansac"] =
-        std::chrono::duration<double, std::milli>(t_end - t_start).count();
-
-    for (auto stats : match_timing_stats) {
-      std::cout << "Match timing stats: " << stats.first << ": " << stats.second << " ms" << std::endl;
+      kpts2.emplace_back(result2.keypoints.at<cv::Point2f>(i), 1);
     }
 
-    // print timing stats
-    std::cout << "Timing Stats:" << std::endl;
-    for (const auto& entry : timing_stats) {
-      std::cout << entry.first << ": " << entry.second << " ms" << std::endl;
+    cv::drawMatches(img1,
+                    kpts1,
+                    img2,
+                    kpts2,
+                    matches,
+                    out_img,
+                    cv::Scalar::all(-1),
+                    cv::Scalar::all(-1),
+                    std::vector<char>(),
+                    cv::DrawMatchesFlags::NOT_DRAW_SINGLE_POINTS);
+    cv::Mat track_img = img2.clone();
+    // Draw lines for each match
+    for (auto match : matches) {
+      const cv::Point2f& pt1 = kpts1[match.queryIdx].pt;
+      const cv::Point2f& pt2 = kpts2[match.trainIdx].pt;
+      cv::line(track_img, pt1, pt2, cv::Scalar(0, 255, 0), 2);
+      // Optionally, draw circles at keypoints
+      cv::circle(track_img, pt1, 4, cv::Scalar(0, 0, 255), -1);
+      cv::circle(track_img, pt2, 4, cv::Scalar(255, 0, 0), -1);
     }
+    cv::imshow("track_img", track_img);
 
-    // Draw matches using OpenCV's drawMatches
-    if (not matches.empty()) {
-      cv::Mat img1 = cv::imread(image1_path, cv::IMREAD_COLOR);
-      cv::Mat img2 = cv::imread(image2_path, cv::IMREAD_COLOR);
+    // draw the heatmap
+    if (!heatmap1.empty() and !heatmap2.empty() and kDrawHeatmap) {
+      cv::Mat heatmap1_colored, heatmap2_colored;
+      cv::Mat heatmap1_u8, heatmap2_u8, heatmap1_norm, heatmap2_norm;
+      // Normalize heatmaps to 0-255 range
+      cv::normalize(heatmap1, heatmap1_norm, 0, 255, cv::NORM_MINMAX, CV_32F);
+      cv::normalize(heatmap2, heatmap2_norm, 0, 255, cv::NORM_MINMAX, CV_32F);
+      heatmap1.convertTo(heatmap1_u8, CV_8U, 255.0 / cv::norm(heatmap1, cv::NORM_INF));
+      heatmap2.convertTo(heatmap2_u8, CV_8U, 255.0 / cv::norm(heatmap2, cv::NORM_INF));
+      cv::applyColorMap(heatmap1_u8, heatmap1_colored, cv::COLORMAP_JET);
+      cv::applyColorMap(heatmap2_u8, heatmap2_colored, cv::COLORMAP_JET);
+      cv::resize(heatmap1_colored, heatmap1_colored, img1.size());
+      cv::resize(heatmap2_colored, heatmap2_colored, img2.size());
+      // Concatenate the two heatmaps to match out_img size
+      cv::Mat heatmap_combined;
+      cv::hconcat(heatmap1_colored, heatmap2_colored, heatmap_combined);
 
-      // draw self matches
-      for (size_t i = 0; i < self_neighbours1.size(); ++i) {
-        for (int j : self_neighbours1[i]) {
-          cv::line(img1,
-                   result1.keypoints.at<cv::Point2f>(i),
-                   result1.keypoints.at<cv::Point2f>(j),
-                   cv::Scalar(255, 255, 0),
-                   1);
-        }
-      }
-      for (size_t i = 0; i < self_neighbours2.size(); ++i) {
-        for (int j : self_neighbours2[i]) {
-          cv::line(img2,
-                   result2.keypoints.at<cv::Point2f>(i),
-                   result2.keypoints.at<cv::Point2f>(j),
-                   cv::Scalar(255, 255, 0),
-                   1);
-        }
-      }
+      // draw the two heatmap sides by side
+      cv::imshow("Heatmap", heatmap_combined);
 
-      std::cout << "Number of matches: " << matches.size() << std::endl;
-      cv::Mat out_img;
-
-      std::vector<cv::KeyPoint> kpts1, kpts2;
-      for (int i = 0; i < result1.keypoints.rows; ++i) {
-        kpts1.emplace_back(result1.keypoints.at<cv::Point2f>(i), 1);
-      }
-      for (int i = 0; i < result2.keypoints.rows; ++i) {
-        kpts2.emplace_back(result2.keypoints.at<cv::Point2f>(i), 1);
-      }
-
-      cv::drawMatches(img1,
-                      kpts1,
-                      img2,
-                      kpts2,
-                      matches,
-                      out_img,
-                      cv::Scalar::all(-1),
-                      cv::Scalar::all(-1),
-                      std::vector<char>(),
-                      cv::DrawMatchesFlags::NOT_DRAW_SINGLE_POINTS);
-      cv::Mat track_img = img2.clone();
-      // Draw lines for each match
+      // plot the keypoints with uncertainties
       for (auto match : matches) {
-        const cv::Point2f& pt1 = kpts1[match.queryIdx].pt;
-        const cv::Point2f& pt2 = kpts2[match.trainIdx].pt;
-        cv::line(track_img, pt1, pt2, cv::Scalar(0, 255, 0), 2);
-        // Optionally, draw circles at keypoints
-        cv::circle(track_img, pt1, 4, cv::Scalar(0, 0, 255), -1);
-        cv::circle(track_img, pt2, 4, cv::Scalar(255, 0, 0), -1);
+        const cv::Point2f& pt1 = result1.keypoints.at<cv::Point2f>(match.queryIdx);
+        const cv::Point2f& pt2 = result2.keypoints.at<cv::Point2f>(match.trainIdx) + cv::Point2f(img1.cols, 0);
+        // draw keypoints
+        // draw eclipse for uncertainty
+        cv::ellipse(out_img,
+                    pt1,
+                    cv::Size(static_cast<int>(std1[match.queryIdx][0]), static_cast<int>(std1[match.queryIdx][1])),
+                    0,
+                    0,
+                    360,
+                    cv::Scalar(0, 255, 0, 50),
+                    1);
+        cv::ellipse(out_img,
+                    pt2,
+                    cv::Size(static_cast<int>(std2[match.trainIdx][0]), static_cast<int>(std2[match.trainIdx][1])),
+                    0,
+                    0,
+                    360,
+                    cv::Scalar(0, 255, 0, 50),
+                    1);
       }
-      cv::imshow("track_img", track_img);
-
-      // draw the heatmap
-      if (!heatmap1.empty() and !heatmap2.empty() and kDrawHeatmap) {
-        cv::Mat heatmap1_colored, heatmap2_colored;
-        cv::Mat heatmap1_u8, heatmap2_u8, heatmap1_norm, heatmap2_norm;
-        // Normalize heatmaps to 0-255 range
-        cv::normalize(heatmap1, heatmap1_norm, 0, 255, cv::NORM_MINMAX, CV_32F);
-        cv::normalize(heatmap2, heatmap2_norm, 0, 255, cv::NORM_MINMAX, CV_32F);
-        heatmap1.convertTo(heatmap1_u8, CV_8U, 255.0 / cv::norm(heatmap1, cv::NORM_INF));
-        heatmap2.convertTo(heatmap2_u8, CV_8U, 255.0 / cv::norm(heatmap2, cv::NORM_INF));
-        cv::applyColorMap(heatmap1_u8, heatmap1_colored, cv::COLORMAP_JET);
-        cv::applyColorMap(heatmap2_u8, heatmap2_colored, cv::COLORMAP_JET);
-        cv::resize(heatmap1_colored, heatmap1_colored, img1.size());
-        cv::resize(heatmap2_colored, heatmap2_colored, img2.size());
-        // Concatenate the two heatmaps to match out_img size
-        cv::Mat heatmap_combined;
-        cv::hconcat(heatmap1_colored, heatmap2_colored, heatmap_combined);
-
-        // draw the two heatmap sides by side
-        cv::imshow("Heatmap", heatmap_combined);
-
-        // plot the keypoints with uncertainties
-        for (auto match : matches) {
-          const cv::Point2f& pt1 = result1.keypoints.at<cv::Point2f>(match.queryIdx);
-          const cv::Point2f& pt2 = result2.keypoints.at<cv::Point2f>(match.trainIdx) + cv::Point2f(img1.cols, 0);
-          // draw keypoints
-          // draw eclipse for uncertainty
-          cv::ellipse(out_img,
-                      pt1,
-                      cv::Size(static_cast<int>(std1[match.queryIdx][0]), static_cast<int>(std1[match.queryIdx][1])),
-                      0,
-                      0,
-                      360,
-                      cv::Scalar(0, 255, 0, 50),
-                      1);
-          cv::ellipse(out_img,
-                      pt2,
-                      cv::Size(static_cast<int>(std2[match.trainIdx][0]), static_cast<int>(std2[match.trainIdx][1])),
-                      0,
-                      0,
-                      360,
-                      cv::Scalar(0, 255, 0, 50),
-                      1);
-        }
-      }
-
-      cv::imshow("Matches", out_img);
-      cv::waitKey(0);
     }
-  } catch (const Ort::Exception& e) {
-    std::cerr << "ONNX Runtime Exception in main: " << e.what() << std::endl;
-    return 1;
-  } catch (const std::exception& e) {
-    std::cerr << "Standard Exception in main: " << e.what() << std::endl;
-    return 1;
+
+    cv::imshow("Matches", out_img);
+    cv::waitKey(0);
   }
 
   return 0;

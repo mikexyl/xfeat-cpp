@@ -47,17 +47,19 @@ XFeatONNX::XFeatONNX(Ort::Env& env,
         cuda_available = true;
       }
     }
+    std::cout << std::endl;
 
     if (!cuda_available) {
       std::cerr << "Error: CUDAExecutionProvider is not available. Terminating." << std::endl;
       throw std::runtime_error("CUDAExecutionProvider not found.");
     }
 
-    // Append TensorRT provider with default options
-    OrtTensorRTProviderOptions trt_options;
-    trt_options.trt_engine_cache_enable = 1;
-    trt_options.trt_engine_cache_path = "./trt_engine_cache";
-    session_options_.AppendExecutionProvider_TensorRT(trt_options);
+    const auto& api = Ort::GetApi();
+    OrtTensorRTProviderOptionsV2* tensorrt_options;
+    Ort::ThrowOnError(api.CreateTensorRTProviderOptions(&tensorrt_options));
+
+    // Append the V2 TensorRT provider
+    session_options_.AppendExecutionProvider_TensorRT_V2(*tensorrt_options);
 
     OrtCUDAProviderOptions cuda_options{};
     session_options_.AppendExecutionProvider_CUDA(cuda_options);
@@ -116,13 +118,14 @@ std::tuple<cv::Mat, float, float> XFeatONNX::preprocess_image(const cv::Mat& ima
   } else {
     throw std::runtime_error("Input image must be either grayscale or BGR.");
   }
-
   cv::resize(input_image, input_image, cv::Size(input_width_, input_height_));
+
   input_image.convertTo(input_image, CV_32F, 1.0 / 255.0);
 
   // Convert HWC to CHW and batch dimension: (1, 3, H, W)
   std::vector<cv::Mat> chw;
   cv::split(input_image, chw);  // chw[0]=C0, chw[1]=C1, chw[2]=C2, each HxW
+
   cv::Mat input_tensor(1, 3 * input_height_ * input_width_, CV_32F);
   for (int c = 0; c < 3; ++c) {
     std::memcpy(input_tensor.ptr<float>(0) + c * input_height_ * input_width_,
@@ -135,7 +138,9 @@ std::tuple<cv::Mat, float, float> XFeatONNX::preprocess_image(const cv::Mat& ima
   float resize_rate_w = static_cast<float>(image.cols) / input_width_;
   float resize_rate_h = static_cast<float>(image.rows) / input_height_;
 
-  return std::make_tuple(input_tensor.clone(), resize_rate_w, resize_rate_h);
+  auto result = std::make_tuple(input_tensor, resize_rate_w, resize_rate_h);
+
+  return result;
 }
 
 // Implemented get_kpts_heatmap
@@ -152,68 +157,87 @@ cv::Mat XFeatONNX::get_kpts_heatmap(const Ort::Value& kpts_tensor,  // Should be
   int H = static_cast<int>(shape[2]);  // 44
   int W = static_cast<int>(shape[3]);  // 80
   const float* data = kpts_tensor.GetTensorData<float>();
-  // Copy data to a contiguous array for easier manipulation
-  std::vector<float> kpts(data, data + B * C * H * W);
-  // Apply softmax_temp (multiply, not divide, to match Python)
-  for (size_t i = 0; i < kpts.size(); ++i) {
-    kpts[i] *= softmax_temp;
-  }
-  // Exponentiate
-  for (size_t i = 0; i < kpts.size(); ++i) {
-    kpts[i] = std::exp(kpts[i]);
-  }
-  // Sum over channel axis (axis=1)
-  std::vector<float> sum_exp(B * H * W, 0.0f);
-  for (int b = 0; b < B; ++b) {
-    for (int h = 0; h < H; ++h) {
-      for (int w = 0; w < W; ++w) {
-        float sum = 0.0f;
-        for (int c = 0; c < C; ++c) {
-          sum += kpts[((b * C + c) * H + h) * W + w];
-        }
-        sum_exp[(b * H + h) * W + w] = sum;
-      }
+
+  // Pre-calculate dimensions for efficiency
+  const int HW = H * W;
+  const int total_size = B * C * HW;
+  const int scores_size = B * 64 * HW;
+
+  // Create working buffer for exponentials (avoid copying original data)
+  std::vector<float> kpts_exp(total_size);
+
+  // Combined softmax operation: multiply by temp and exponentiate in single parallel loop
+  tbb::parallel_for(tbb::blocked_range<size_t>(0, total_size), [&](const tbb::blocked_range<size_t>& range) {
+    for (size_t i = range.begin(); i != range.end(); ++i) {
+      kpts_exp[i] = std::exp(data[i] * softmax_temp);
     }
-  }
-  // Normalize and keep only first 64 channels
-  std::vector<float> scores(B * 64 * H * W, 0.0f);
-  for (int b = 0; b < B; ++b) {
-    for (int c = 0; c < 64; ++c) {
-      for (int h = 0; h < H; ++h) {
-        for (int w = 0; w < W; ++w) {
-          float v = kpts[((b * C + c) * H + h) * W + w];
-          float s = sum_exp[(b * H + h) * W + w];
-          scores[((b * 64 + c) * H + h) * W + w] = v / s;
-        }
+  });
+
+  // Sum over channel axis (axis=1) with parallelization
+  std::vector<float> sum_exp(B * HW);
+
+  // Parallelize over spatial dimensions (H*W)
+  tbb::parallel_for(tbb::blocked_range<int>(0, B * HW), [&](const tbb::blocked_range<int>& range) {
+    for (int hw_idx = range.begin(); hw_idx != range.end(); ++hw_idx) {
+      int b = hw_idx / HW;
+      int hw = hw_idx % HW;
+
+      float sum = 0.0f;
+      // Vectorized sum over channels - better cache locality
+      const float* base_ptr = &kpts_exp[b * C * HW + hw];
+      for (int c = 0; c < C; ++c) {
+        sum += base_ptr[c * HW];
       }
+      sum_exp[hw_idx] = sum;
     }
-  }
-  // Rearrange: (B, 64, H, W) -> (B, H, W, 8, 8)
-  std::vector<float> heatmap(B * H * 8 * W * 8, 0.0f);
-  for (int b = 0; b < B; ++b) {
-    for (int h = 0; h < H; ++h) {
-      for (int w = 0; w < W; ++w) {
-        for (int gh = 0; gh < 8; ++gh) {
-          for (int gw = 0; gw < 8; ++gw) {
-            int c = gh * 8 + gw;
-            float v = scores[((b * 64 + c) * H + h) * W + w];
-            // (B, H, W, 8, 8)
-            heatmap[((((b * H + h) * 8 + gh) * W + w) * 8 + gw)] = v;
-          }
-        }
-      }
+  });
+
+  // Normalize and keep only first 64 channels with parallelization
+  std::vector<float> scores(scores_size);
+
+  tbb::parallel_for(tbb::blocked_range<int>(0, B * 64 * HW), [&](const tbb::blocked_range<int>& range) {
+    for (int idx = range.begin(); idx != range.end(); ++idx) {
+      int b = idx / (64 * HW);
+      int c = (idx / HW) % 64;
+      int hw = idx % HW;
+
+      float v = kpts_exp[b * C * HW + c * HW + hw];
+      float s = sum_exp[b * HW + hw];
+      scores[idx] = v / s;
     }
-  }
-  // Reshape to (B, 1, H*8, W*8)
-  int out_H = H * 8;
-  int out_W = W * 8;
-  // Only support B=1 for now
+  });
+
+  // Direct output to cv::Mat to avoid extra copy
+  const int out_H = H * 8;
+  const int out_W = W * 8;
   cv::Mat out_heatmap(out_H, out_W, CV_32F);
-  for (int oh = 0; oh < out_H; ++oh) {
-    for (int ow = 0; ow < out_W; ++ow) {
-      out_heatmap.at<float>(oh, ow) = heatmap[oh * out_W + ow];
+  float* out_data = out_heatmap.ptr<float>();
+
+  // Rearrange with optimized memory access pattern and parallelization
+  // Process in blocks to improve cache locality
+  tbb::parallel_for(tbb::blocked_range<int>(0, H * W), [&](const tbb::blocked_range<int>& range) {
+    for (int hw_idx = range.begin(); hw_idx != range.end(); ++hw_idx) {
+      int h = hw_idx / W;
+      int w = hw_idx % W;
+
+      // Calculate base indices
+      const int out_base_h = h * 8;
+      const int out_base_w = w * 8;
+      const int scores_base = h * W + w;  // For B=1
+
+      // Unroll the 8x8 block for better performance
+      for (int gh = 0; gh < 8; ++gh) {
+        const int out_row = out_base_h + gh;
+        float* out_row_ptr = &out_data[out_row * out_W + out_base_w];
+
+        for (int gw = 0; gw < 8; ++gw) {
+          const int c = gh * 8 + gw;
+          const int scores_idx = c * HW + scores_base;
+          out_row_ptr[gw] = scores[scores_idx];
+        }
+      }
     }
-  }
+  });
   return out_heatmap;
 }
 
@@ -279,18 +303,18 @@ DetectionResult XFeatONNX::detect_and_compute(Ort::Session& session,
                                               std::vector<cv::Vec2d>* std) {
   auto [input_tensor, resize_rate_w, resize_rate_h] = preprocess_image(image);
   if (x_prep) {
-    *x_prep = input_tensor.clone();  // Copy preprocessed image
+    *x_prep = input_tensor;  // Copy preprocessed image
   }
+  assert(input_tensor.type() == CV_32FC3);
+  assert(input_tensor.isContinuous());
 
   auto input_node_names = session.GetInputNames();
   auto output_node_names = session.GetOutputNames();
   std::vector<int64_t> input_shape = {1, 3, input_height_, input_width_};
   Ort::AllocatorWithDefaultOptions allocator;
-  Ort::Value input_ort_tensor = Ort::Value::CreateTensor<float>(allocator.GetInfo(),
-                                                                (float*)input_tensor.data,
-                                                                input_tensor.total() * input_tensor.channels(),
-                                                                input_shape.data(),
-                                                                input_shape.size());
+  size_t input_tensor_size = 1 * 3 * input_height_ * input_width_;
+  Ort::Value input_ort_tensor = Ort::Value::CreateTensor<float>(
+      allocator.GetInfo(), (float*)input_tensor.data, input_tensor_size, input_shape.data(), input_shape.size());
   std::vector<const char*> input_names_char;
   for (const auto& name : input_node_names) {
     input_names_char.push_back(name.c_str());
@@ -300,17 +324,13 @@ DetectionResult XFeatONNX::detect_and_compute(Ort::Session& session,
     output_names_char.push_back(name.c_str());
   }
   std::vector<Ort::Value> output_tensors;
-  try {
-    output_tensors = session.Run(Ort::RunOptions{nullptr},
-                                 input_names_char.data(),
-                                 &input_ort_tensor,
-                                 1,
-                                 output_names_char.data(),
-                                 output_names_char.size());
-  } catch (const Ort::Exception& e) {
-    std::cerr << "ONNX Runtime Exception: " << e.what() << std::endl;
-    return {};
-  }
+  output_tensors = session.Run(Ort::RunOptions{nullptr},
+                               input_names_char.data(),
+                               &input_ort_tensor,
+                               1,
+                               output_names_char.data(),
+                               output_names_char.size());
+
   // M1: Feature map, K1: Keypoint logits
   const Ort::Value& M1_tensor = output_tensors[0];
   const Ort::Value& K1_tensor = output_tensors[1];
@@ -356,7 +376,7 @@ DetectionResult XFeatONNX::detect_and_compute(Ort::Session& session,
 
   // Save heatmap for debugging
   if (heatmap) {
-    *heatmap = K1h.clone();  // Copy to output heatmap
+    *heatmap = K1h;  // Copy to output heatmap
   }
 
   // NMS on K1h (upsampled heatmap)
@@ -390,18 +410,23 @@ DetectionResult XFeatONNX::detect_and_compute(Ort::Session& session,
   auto interp_bilinear_output_names = interp_bilinear_session_.GetOutputNames();
   std::vector<const char*> interp_bilinear_output_names_char;
   for (const auto& name : interp_bilinear_output_names) interp_bilinear_output_names_char.push_back(name.c_str());
-  std::vector<Ort::Value> nearest_out = interp_nearest_session_.Run(Ort::RunOptions{nullptr},
-                                                                    interp_input_names.data(),
-                                                                    interp_inputs.data(),
-                                                                    2,
-                                                                    interp_nearest_output_names_char.data(),
-                                                                    interp_nearest_output_names_char.size());
-  std::vector<Ort::Value> bilinear_out = interp_bilinear_session_.Run(Ort::RunOptions{nullptr},
-                                                                      interp_input_names.data(),
-                                                                      interp_inputs.data(),
-                                                                      2,
-                                                                      interp_bilinear_output_names_char.data(),
-                                                                      interp_bilinear_output_names_char.size());
+  std::vector<Ort::Value> nearest_out;
+  nearest_out = interp_nearest_session_.Run(Ort::RunOptions{nullptr},
+                                            interp_input_names.data(),
+                                            interp_inputs.data(),
+                                            2,
+                                            interp_nearest_output_names_char.data(),
+                                            interp_nearest_output_names_char.size());
+
+  std::vector<Ort::Value> bilinear_out;
+  bilinear_out = interp_bilinear_session_.Run(Ort::RunOptions{nullptr},
+                                              interp_input_names.data(),
+                                              interp_inputs.data(),
+                                              2,
+                                              interp_bilinear_output_names_char.data(),
+                                              interp_bilinear_output_names_char.size());
+
+  auto time_score_computation = std::chrono::high_resolution_clock::now();
   float* nearest_scores = nearest_out[0].GetTensorMutableData<float>();
   float* bilinear_scores = bilinear_out[0].GetTensorMutableData<float>();
   cv::Mat scores_mat(mkpts_mat.rows, 1, CV_32F);
@@ -459,12 +484,14 @@ DetectionResult XFeatONNX::detect_and_compute(Ort::Session& session,
   auto interp_bicubic_output_names = interp_bicubic_session_.GetOutputNames();
   std::vector<const char*> interp_bicubic_output_names_char;
   for (const auto& name : interp_bicubic_output_names) interp_bicubic_output_names_char.push_back(name.c_str());
-  std::vector<Ort::Value> feats_out = interp_bicubic_session_.Run(Ort::RunOptions{nullptr},
-                                                                  interp_input_names.data(),
-                                                                  bicubic_inputs.data(),
-                                                                  2,
-                                                                  interp_bicubic_output_names_char.data(),
-                                                                  interp_bicubic_output_names_char.size());
+  std::vector<Ort::Value> feats_out;
+  feats_out = interp_bicubic_session_.Run(Ort::RunOptions{nullptr},
+                                          interp_input_names.data(),
+                                          bicubic_inputs.data(),
+                                          2,
+                                          interp_bicubic_output_names_char.data(),
+                                          interp_bicubic_output_names_char.size());
+
   float* feats_ptr = feats_out[0].GetTensorMutableData<float>();
   int feat_dim = C;
   int n_kpts = topk_kpts.size();

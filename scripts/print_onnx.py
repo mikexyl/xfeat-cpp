@@ -13,11 +13,11 @@ def print_onnx_structure(model_path):
     for output_tensor in graph.output:
         print(f"  {output_tensor.name}: {output_tensor.type}")
 
-    print("\nModel Nodes:")
-    for node in graph.node:
-        print(f"  {node.op_type}: {node.name}")
-        print(f"    Inputs: {node.input}")
-        print(f"    Outputs: {node.output}")
+    # print("\nModel Nodes:")
+    # for node in graph.node:
+    #     print(f"  {node.op_type}: {node.name}")
+    #     print(f"    Inputs: {node.input}")
+    #     print(f"    Outputs: {node.output}")
 
 if __name__ == "__main__":
     if len(sys.argv) != 2:
