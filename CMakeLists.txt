@@ -62,6 +62,8 @@ target_link_libraries(${PROJECT_NAME}
     OpenMP::OpenMP_CXX
 )
 
+add_subdirectory(include/xfeat-cpp/nms/anms)
+
 option(CUBLAS_DIR "Path to CUBLAS installation")
 message(STATUS "CUBLAS_DIR: ${CUBLAS_DIR}")
 

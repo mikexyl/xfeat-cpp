@@ -18,3 +18,12 @@ target_link_libraries(batch_match_example
 
 install(TARGETS batch_match_example DESTINATION bin)
 
+
+add_executable(feature_nms_example feature_nms.cpp)
+target_link_libraries(feature_nms_example
+    PRIVATE
+    ${PROJECT_NAME}
+    Boost::program_options
+)
+
+install(TARGETS feature_nms_example DESTINATION bin)

@@ -8,6 +8,7 @@
 
 #include "xfeat-cpp/gpu_matcher.h"
 #include "xfeat-cpp/lighterglue_onnx.h"
+#include "xfeat-cpp/nms/anms/anms.h"
 #include "xfeat-cpp/types.h"
 
 namespace xfeat {
@@ -24,6 +25,9 @@ class XFeatONNX {
     bool use_gpu = false;
     int nkpts = 4096;                               // Default number of keypoints
     MatcherType matcher_type = MatcherType::FLANN;  // Default to BFMatcher
+    int anms = 0;                                   // Default no anms
+    int nkpts_before_anms = 0;                      // Default no keypoints before ANMS
+    int keypoint_detection = 0;                      // Default xfeat keypoint detection
   };
 
   XFeatONNX(Ort::Env& env, const Params& params, std::unique_ptr<LighterGlueOnnx> lighterglue = nullptr);
@@ -35,6 +39,9 @@ class XFeatONNX {
             bool use_gpu,
             int nkpts,
             MatcherType matcher_type,
+            int anms,
+            int nkpts_before_anms,
+            int keypoint_detection,
             std::unique_ptr<LighterGlueOnnx> lighterglue = nullptr);
 
   std::vector<cv::DMatch> match(cv::Mat image1,
@@ -64,6 +71,9 @@ class XFeatONNX {
   Ort::Session interp_bilinear_session_;
   Ort::Session interp_bicubic_session_;
   Ort::Session interp_nearest_session_;
+  int anms_ = 0;                // Default no anms
+  int nkpts_before_anms_ = 0;   // Default no keypoints before ANMS
+  int keypoint_detection_ = 0;  // Default xfeat keypoint detection
 
  public:
   int input_width_;
@@ -91,7 +101,10 @@ class XFeatONNX {
                                      cv::Mat* heatmap = nullptr,
                                      cv::Mat* M1 = nullptr,
                                      cv::Mat* x_prep = nullptr,
-                                     std::vector<cv::Vec2d>* std = nullptr);
+                                     std::vector<cv::Vec2d>* std = nullptr,
+                                     int anms = 0,
+                                     int nkpts_before_anms = 0,
+                                     int keypoint_detection = 0);
 
   std::vector<std::vector<int>> match_mkpts_bf(const cv::Mat& feats1, const cv::Mat& feats2, float min_cossim = 0.82f);
 

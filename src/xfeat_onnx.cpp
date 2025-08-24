@@ -23,12 +23,18 @@ XFeatONNX::XFeatONNX(Ort::Env& env,
                      bool use_gpu,
                      int nkpts,
                      MatcherType matcher_type,
+                     int anms,
+                     int nkpts_before_anms,
+                     int keypoint_detection,
                      std::unique_ptr<LighterGlueOnnx> lighterglue)
     : xfeat_session_(nullptr),
       interp_bilinear_session_(nullptr),
       interp_bicubic_session_(nullptr),
       interp_nearest_session_(nullptr),
       matcher_type_(matcher_type),
+      anms_(anms),
+      nkpts_before_anms_(nkpts_before_anms),
+      keypoint_detection_(keypoint_detection),
       lighterglue_(std::move(lighterglue)) {
   session_options_.SetIntraOpNumThreads(1);
   session_options_.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_EXTENDED);
@@ -54,12 +60,12 @@ XFeatONNX::XFeatONNX(Ort::Env& env,
       throw std::runtime_error("CUDAExecutionProvider not found.");
     }
 
-    const auto& api = Ort::GetApi();
-    OrtTensorRTProviderOptionsV2* tensorrt_options;
-    Ort::ThrowOnError(api.CreateTensorRTProviderOptions(&tensorrt_options));
+    // const auto& api = Ort::GetApi();
+    // OrtTensorRTProviderOptionsV2* tensorrt_options;
+    // Ort::ThrowOnError(api.CreateTensorRTProviderOptions(&tensorrt_options));
 
-    // Append the V2 TensorRT provider
-    session_options_.AppendExecutionProvider_TensorRT_V2(*tensorrt_options);
+    // // Append the V2 TensorRT provider
+    // session_options_.AppendExecutionProvider_TensorRT_V2(*tensorrt_options);
 
     OrtCUDAProviderOptions cuda_options{};
     session_options_.AppendExecutionProvider_CUDA(cuda_options);
@@ -106,18 +112,11 @@ XFeatONNX::XFeatONNX(Ort::Env& env,
 // Placeholder for preprocess_image
 std::tuple<cv::Mat, float, float> XFeatONNX::preprocess_image(const cv::Mat& image) {
   // check if image empty
-  cv::Mat input_image;
+  cv::Mat input_image = image;
   if (image.empty()) {
     throw std::runtime_error("Input image is empty.");
   }
-  // if image is in gray scale, convert to BGR
-  if (image.channels() == 1) {
-    cv::cvtColor(image, input_image, cv::COLOR_GRAY2BGR);
-  } else if (image.channels() == 3) {
-    input_image = image.clone();  // BGR image
-  } else {
-    throw std::runtime_error("Input image must be either grayscale or BGR.");
-  }
+
   cv::resize(input_image, input_image, cv::Size(input_width_, input_height_));
 
   input_image.convertTo(input_image, CV_32F, 1.0 / 255.0);
@@ -300,8 +299,20 @@ DetectionResult XFeatONNX::detect_and_compute(Ort::Session& session,
                                               cv::Mat* heatmap,
                                               cv::Mat* M1,
                                               cv::Mat* x_prep,
-                                              std::vector<cv::Vec2d>* std) {
-  auto [input_tensor, resize_rate_w, resize_rate_h] = preprocess_image(image);
+                                              std::vector<cv::Vec2d>* std,
+                                              int anms,
+                                              int nkpts_before_anms,
+                                              int keypoint_detection) {
+  // if image is in gray scale, convert to BGR
+  cv::Mat color_image, gray_image;
+  if (image.channels() == 1) {
+    gray_image = image;
+    cv::cvtColor(image, color_image, cv::COLOR_GRAY2BGR);
+  } else {
+    cv::cvtColor(image, gray_image, cv::COLOR_BGR2GRAY);
+    color_image = image;
+  }
+  auto [input_tensor, resize_rate_w, resize_rate_h] = preprocess_image(color_image);
   if (x_prep) {
     *x_prep = input_tensor;  // Copy preprocessed image
   }
@@ -371,16 +382,53 @@ DetectionResult XFeatONNX::detect_and_compute(Ort::Session& session,
   cv::Mat M1_normed;
   cv::merge(M1_channels, M1_normed);  // (H, W, C)
 
+  cv::Mat mkpts_mat;
+
   // Get heatmap K1h
   cv::Mat K1h = get_kpts_heatmap(K1_tensor);
 
-  // Save heatmap for debugging
-  if (heatmap) {
-    *heatmap = K1h;  // Copy to output heatmap
+  if (keypoint_detection == 0) {
+    // Save heatmap for debugging
+    if (heatmap) {
+      *heatmap = K1h;  // Copy to output heatmap
+    }
+
+    // NMS on K1h (upsampled heatmap)
+    mkpts_mat = nms(K1h, 0.1, 20);  // Pass K1h (cv::Mat), not K1_tensor
+  } else {
+    // run gftt on the original image to get better keypoints
+    std::vector<cv::Point2f> keypoints;
+    cv::goodFeaturesToTrack(gray_image, keypoints, nkpts_before_anms, 0.01, 10, noArray(), 3, false, 0.04);
+
+    // resize the keypoints
+    for (auto& kp : keypoints) {
+      kp.x /= resize_rate_w;
+      kp.y /= resize_rate_h;
+    }
+
+    // populate mkpts_mat
+    mkpts_mat = cv::Mat(keypoints.size(), 2, CV_32F);
+    for (size_t i = 0; i < keypoints.size(); ++i) {
+      mkpts_mat.at<float>(i, 0) = keypoints[i].x;
+      mkpts_mat.at<float>(i, 1) = keypoints[i].y;
+    }
   }
 
-  // NMS on K1h (upsampled heatmap)
-  cv::Mat mkpts_mat = nms(K1h, 0.05, 5);  // Pass K1h (cv::Mat), not K1_tensor
+  if (anms == 1) {
+    std::vector<cv::KeyPoint> keypoints;
+    for (int i = 0; i < mkpts_mat.rows; ++i) {
+      float x = mkpts_mat.at<float>(i, 0);
+      float y = mkpts_mat.at<float>(i, 1);
+      keypoints.emplace_back(cv::KeyPoint(x, y, 1));
+    }
+
+    std::vector<cv::KeyPoint> anms_keypoints = anms::Ssc(keypoints, top_k, 0.1, 640, 480);
+    mkpts_mat = cv::Mat(anms_keypoints.size(), 2, CV_32F);
+    for (size_t i = 0; i < anms_keypoints.size(); ++i) {
+      mkpts_mat.at<float>(i, 0) = anms_keypoints[i].pt.x;
+      mkpts_mat.at<float>(i, 1) = anms_keypoints[i].pt.y;
+    }
+  }
 
   // Interpolate for scores (nearest and bilinear)
   // Prepare ONNX input for interpolators
@@ -761,7 +809,8 @@ DetectionResult XFeatONNX::detect_and_compute(cv::Mat image,
                                               cv::Mat* M1,
                                               cv::Mat* x_prep,
                                               std::vector<cv::Vec2d>* std) {
-  return detect_and_compute(xfeat_session_, image, top_k, heatmap, M1, x_prep, std);
+  return detect_and_compute(
+      xfeat_session_, image, top_k, heatmap, M1, x_prep, std, anms_, nkpts_before_anms_, keypoint_detection_);
 }
 
 std::vector<std::vector<int>> XFeatONNX::match_mkpts_flann(const cv::Mat& feats1,
@@ -814,4 +863,7 @@ XFeatONNX::XFeatONNX(Ort::Env& env, const Params& params, std::unique_ptr<Lighte
                 params.use_gpu,
                 params.nkpts,
                 params.matcher_type,
+                params.anms,
+                params.nkpts_before_anms,
+                params.keypoint_detection,
                 std::move(lighterglue)) {}

@@ -1,0 +1,3 @@
+[submodule "thirdparty/gms"]
+	path = thirdparty/gms
+	url = git@github.com:JiawangBian/GMS-Feature-Matcher.git

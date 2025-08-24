@@ -106,7 +106,7 @@ int main(int argc, char* argv[]) {
   std::filesystem::path image2_path = image_folder / "sample2.jpg";
 
   const std::string image_resolution = "640x480";
-  constexpr int max_kpts = 2000;  // Default maximum keypoints to detect
+  constexpr int max_kpts = 500;  // Default maximum keypoints to detect
 
   std::filesystem::path xfeat_model_folder = (argc > 2) ? argv[2] : "onnx_model";
   std::filesystem::path xfeat_model_path = xfeat_model_folder / ("xfeat_" + image_resolution + ".onnx");
@@ -144,6 +144,8 @@ int main(int argc, char* argv[]) {
                            .use_gpu = true,
                            .nkpts = max_kpts,
                            .matcher_type = MatcherType::GPU_BF,
+                           .anms = 1,
+                           .nkpts_before_anms = 1000,
                        },
                        std::move(lighterglue));
 
@@ -186,7 +188,8 @@ int main(int argc, char* argv[]) {
   std::chrono::duration<double, std::milli> opencv_duration = opencv_end - opencv_start;
   std::cout << "OpenCV goodFeaturesToTrack on 2 images (size: " << image1.cols << "x" << image1.rows << ") took "
             << opencv_duration.count() << "ms." << std::endl;
-  std::cout << "OpenCV detected corners: image1=" << opencv_corners1.size() << ", image2=" << opencv_corners2.size() << std::endl;
+  std::cout << "OpenCV detected corners: image1=" << opencv_corners1.size() << ", image2=" << opencv_corners2.size()
+            << std::endl;
 
   // Also compare with ORB detector for feature detection + description
   auto orb_start = std::chrono::high_resolution_clock::now();
@@ -199,7 +202,8 @@ int main(int argc, char* argv[]) {
   std::chrono::duration<double, std::milli> orb_duration = orb_end - orb_start;
   std::cout << "OpenCV ORB detectAndCompute on 2 images (size: " << image1.cols << "x" << image1.rows << ") took "
             << orb_duration.count() << "ms." << std::endl;
-  std::cout << "ORB detected keypoints: image1=" << orb_keypoints1.size() << ", image2=" << orb_keypoints2.size() << std::endl;
+  std::cout << "ORB detected keypoints: image1=" << orb_keypoints1.size() << ", image2=" << orb_keypoints2.size()
+            << std::endl;
 
   std::vector<std::vector<int>> self_neighbours1, self_neighbours2;
 
@@ -219,8 +223,9 @@ int main(int argc, char* argv[]) {
 
   auto t_start = std::chrono::high_resolution_clock::now();
   cv::Mat E;
-  std::vector<cv::DMatch> matches = gpu_matcher.match_gpuRansac(result1, result2, 0.4f, 512, fx, fy, cx, cy, &E);
-  // matches = gpu_matcher.match(result1, result2, 0.4, H, 50);
+  std::vector<cv::DMatch> matches;
+  // matches = gpu_matcher.match_gpuRansac(result1, result2, 0.4f, 512, fx, fy, cx, cy, &E);
+  matches = gpu_matcher.match(result1, result2, 0.7, H, 100, 1, image1.size());
   auto t_end = std::chrono::high_resolution_clock::now();
   match_timing_stats["gpu_match_mkpts_gpuRansac"] = std::chrono::duration<double, std::milli>(t_end - t_start).count();
 

@@ -7,6 +7,7 @@
 #include <opencv4/opencv2/core/types.hpp>
 #include <vector>
 
+#include "gms_matcher.h"
 #include "xfeat-cpp/helpers.h"
 #include "xfeat-cpp/types.h"
 
@@ -33,7 +34,9 @@ class CuMatcher {
                                 DetectionResult& result2,
                                 float min_sim,
                                 cv::Mat H,
-                                int search_radius) {
+                                int search_radius,
+                                int filtering = 1,
+                                cv::Size img_size = cv::Size()) {
     std::vector<cv::Point2f> keypoints1, keypoints2;
     for (int i = 0; i < result1.keypoints.rows; ++i) {
       keypoints1.emplace_back(result1.keypoints.at<float>(i, 0), result1.keypoints.at<float>(i, 1));
@@ -61,6 +64,7 @@ class CuMatcher {
     std::vector<int> matched_indices2;
     matched_indices1.reserve(num_matched);
     matched_indices2.reserve(num_matched);
+    std::vector<cv::DMatch> matches;
 
     // --- fill them using a ‘row’ index that only counts valid matches ----------
     size_t row = 0;
@@ -76,50 +80,66 @@ class CuMatcher {
 
       matched_indices1.push_back(index_i);
       matched_indices2.push_back(index_j);
+
+      matches.emplace_back(index_i, index_j, 0.0f);
+
       ++row;  // advance only on success
     }
 
-    // (optional) shrink if we skipped any rows because ‘j’ was invalid
-    if (row != num_matched) {
-      mkpts1 = mkpts1.rowRange(0, static_cast<int>(row)).clone();
-      mkpts2 = mkpts2.rowRange(0, static_cast<int>(row)).clone();
-      matched_indices1.resize(row);
-      matched_indices2.resize(row);
-    }
+    if (filtering == 1) {
+      // Filter matches using homography (RANSAC)
+      cv::Mat new_H;
+      auto inliers = calc_warp_corners_and_matches(mkpts1, mkpts2, &H);
 
-    // Filter matches using homography (RANSAC)
-    cv::Mat new_H;
-    auto inliers = calc_warp_corners_and_matches(mkpts1, mkpts2, &H);
-
-    std::vector<int> inlier_indices1, inlier_indices2;
-    for (size_t i = 0; i < inliers.size(); ++i) {
-      if (inliers[i] > 0) {  // Inlier
-        inlier_indices1.push_back(matched_indices1[i]);
-        inlier_indices2.push_back(matched_indices2[i]);
-      }
-    }
-
-    std::vector<cv::DMatch> matches;
-    if (not H.empty() and inlier_indices1.size() < result1.keypoints.rows * 0.8) {
-      std::vector<cv::Point2f> kpts1_warped;
-      cv::perspectiveTransform(keypoints1, kpts1_warped, H);
-      int local_search_radius = search_radius * 0.05;          // e.g. 3.0 for search_radius=60
-      local_search_radius = std::max(local_search_radius, 5);  // Ensure it's at least 5
-      auto [rematch_id1, rematch_id2] = this->match_mkpts_local(
-          result1.descriptors, result2.descriptors, kpts1_warped, keypoints2, local_search_radius, min_sim);
-
-      for (int i = 0; i < rematch_id1.size(); ++i) {
-        if (rematch_id1[i] >= 0 && rematch_id2[i] >= 0) {
-          matches.emplace_back(rematch_id1[i], rematch_id2[i], 0.0f);
+      std::vector<int> inlier_indices1, inlier_indices2;
+      for (size_t i = 0; i < inliers.size(); ++i) {
+        if (inliers[i] > 0) {  // Inlier
+          inlier_indices1.push_back(matched_indices1[i]);
+          inlier_indices2.push_back(matched_indices2[i]);
         }
       }
-    } else {
-      // populate matches with inliers
-      for (size_t i = 0; i < inlier_indices1.size(); ++i) {
-        matches.emplace_back(inlier_indices1[i], inlier_indices2[i],
-                             0.0f);  // Assuming distance is not used here
+
+      matches.clear();
+      if (not H.empty() and inlier_indices1.size() < result1.keypoints.rows * 0.8) {
+        std::vector<cv::Point2f> kpts1_warped;
+        cv::perspectiveTransform(keypoints1, kpts1_warped, H);
+        int local_search_radius = search_radius * 0.05;          // e.g. 3.0 for search_radius=60
+        local_search_radius = std::max(local_search_radius, 5);  // Ensure it's at least 5
+        auto [rematch_id1, rematch_id2] = this->match_mkpts_local(
+            result1.descriptors, result2.descriptors, kpts1_warped, keypoints2, local_search_radius, min_sim);
+
+        for (int i = 0; i < rematch_id1.size(); ++i) {
+          if (rematch_id1[i] >= 0 && rematch_id2[i] >= 0) {
+            matches.emplace_back(rematch_id1[i], rematch_id2[i], 0.0f);
+          }
+        }
+      } else {
+        // populate matches with inliers
+        for (size_t i = 0; i < inlier_indices1.size(); ++i) {
+          matches.emplace_back(inlier_indices1[i], inlier_indices2[i],
+                               0.0f);  // Assuming distance is not used here
+        }
       }
+    } else if (filtering == 2) {
+      std::vector<cv::KeyPoint> kpts1, kpts2;
+
+      cv::KeyPoint::convert(keypoints1, kpts1);
+      cv::KeyPoint::convert(keypoints2, kpts2);
+
+      // use GMS
+      gms_matcher gms(kpts1, img_size, kpts2, img_size, matches);
+      std::vector<bool> inlier_mask;
+      gms.GetInlierMask(inlier_mask, true, true);
+      // Apply inlier mask to matches
+      std::vector<cv::DMatch> filtered_matches;
+      for (size_t i = 0; i < matches.size(); ++i) {
+        if (inlier_mask[i]) {
+          filtered_matches.push_back(matches[i]);
+        }
+      }
+      matches = filtered_matches;
     }
+
     return matches;
   }
 

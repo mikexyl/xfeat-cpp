@@ -88,6 +88,7 @@ class XFeatCV : public cv::Feature2D {
     for (int i = 0; i < result.keypoints.rows; i++) {
       KeyPoint kp;
       kp.pt = Point2f(result.keypoints.at<float>(i, 0), result.keypoints.at<float>(i, 1));
+      kp.size = 3;
       keypoints.push_back(kp);
     }
     // If mask is provided, apply it (not implemented in XFeatONNX)
