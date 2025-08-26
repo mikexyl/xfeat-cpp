@@ -301,21 +301,31 @@ int main(int argc, char* argv[]) {
     if (!heatmap1.empty() and !heatmap2.empty() and kDrawHeatmap) {
       cv::Mat heatmap1_colored, heatmap2_colored;
       cv::Mat heatmap1_u8, heatmap2_u8, heatmap1_norm, heatmap2_norm;
+
       // Normalize heatmaps to 0-255 range
       cv::normalize(heatmap1, heatmap1_norm, 0, 255, cv::NORM_MINMAX, CV_32F);
-      cv::normalize(heatmap2, heatmap2_norm, 0, 255, cv::NORM_MINMAX, CV_32F);
-      heatmap1.convertTo(heatmap1_u8, CV_8U, 255.0 / cv::norm(heatmap1, cv::NORM_INF));
-      heatmap2.convertTo(heatmap2_u8, CV_8U, 255.0 / cv::norm(heatmap2, cv::NORM_INF));
-      cv::applyColorMap(heatmap1_u8, heatmap1_colored, cv::COLORMAP_JET);
-      cv::applyColorMap(heatmap2_u8, heatmap2_colored, cv::COLORMAP_JET);
+      // apply log
+      cv::log(heatmap1_norm + 1, heatmap1_norm);
+
+      heatmap1_norm.convertTo(heatmap1_u8, CV_8U, 255.0 / cv::norm(heatmap1_norm, cv::NORM_INF));
+      cv::applyColorMap(heatmap1_u8, heatmap1_colored, cv::COLORMAP_TURBO);
       cv::resize(heatmap1_colored, heatmap1_colored, img1.size());
+
+      cv::normalize(heatmap2, heatmap2_norm, 0, 255, cv::NORM_MINMAX, CV_32F);
+      heatmap2.convertTo(heatmap2_u8, CV_8U, 255.0 / cv::norm(heatmap2, cv::NORM_INF));
+      cv::applyColorMap(heatmap2_u8, heatmap2_colored, cv::COLORMAP_JET);
       cv::resize(heatmap2_colored, heatmap2_colored, img2.size());
+
       // Concatenate the two heatmaps to match out_img size
       cv::Mat heatmap_combined;
       cv::hconcat(heatmap1_colored, heatmap2_colored, heatmap_combined);
 
       // draw the two heatmap sides by side
       cv::imshow("Heatmap", heatmap_combined);
+      // save heatmap
+      cv::imwrite(image_folder / "heatmap_combined.png", heatmap_combined);
+      cv::imwrite(image_folder / "heatmap1.png", heatmap1_colored);
+      cv::imwrite(image_folder / "heatmap2.png", heatmap2_colored);
 
       // plot the keypoints with uncertainties
       for (auto match : matches) {
@@ -341,6 +351,12 @@ int main(int argc, char* argv[]) {
                     1);
       }
     }
+
+    cv::Mat raw_image_with_keypoints(img1);
+    for (const auto& kp : kpts1) {
+      cv::circle(raw_image_with_keypoints, kp.pt, 3, cv::Scalar(0, 0, 255), -1);
+    }
+    cv::imwrite(image_folder / "raw_image_with_keypoints.png", raw_image_with_keypoints);
 
     cv::imshow("Matches", out_img);
     cv::waitKey(0);

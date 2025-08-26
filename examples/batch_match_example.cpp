@@ -29,7 +29,7 @@ int main(int argc, char* argv[]) {
   std::filesystem::path image_folder((argc > 1) ? argv[1] : "image");
   const std::string image_resolution = "640x480";
   constexpr int max_kpts = 500;
-  const int num_images = 1200;
+  const int num_images = 4000;
 
   std::filesystem::path xfeat_model_folder = (argc > 2) ? argv[2] : "onnx_model";
   std::filesystem::path xfeat_model_path = xfeat_model_folder / ("xfeat_" + image_resolution + ".onnx");
@@ -127,17 +127,6 @@ int main(int argc, char* argv[]) {
 
   // --- Get the image 10 frames before the query image (if possible) ---
   float vlad_threshold = 0.0f;
-  if (query_idx >= 10) {
-    auto before10_path = all_image_paths[query_idx - 10];
-    cv::Mat before10_img = cv::imread(before10_path, cv::IMREAD_GRAYSCALE);
-    if (!before10_img.empty()) {
-      auto vlad_before10 = extract_netvlad_desc(before10_img);
-      // faiss::fvec_L2sqr(a, b, d)
-      vlad_threshold = 0.8 * faiss::fvec_L2sqr(vlad_query[0].data(), vlad_before10[0].data(), vlad_query[0].size());
-      std::cout << "VLAD distance to image 10 frames before: " << vlad_threshold << std::endl;
-    }
-  }
-  vlad_threshold = 0.1;
 
   // Randomly select 20 sample images (excluding the query image)
   std::vector<std::filesystem::path> sample_paths = all_image_paths;
@@ -174,7 +163,7 @@ int main(int argc, char* argv[]) {
   std::vector<float> vlad_query_vec = vlad_query[0];
 
   // === FAISS index loading and transfer to GPU ===
-  std::filesystem::path faiss_index_path = xfeat_model_folder / "faiss_ivfflat.index.bin";
+  std::filesystem::path faiss_index_path = xfeat_model_folder / "faiss_ivfflat_pca4096.index.bin";
   xfeat::FaissDatabase faiss_db(xfeat::FaissDatabase::IndexMode::kIVFFlat, faiss_index_path.string());
 
   // === FLATTEN and ADD VLAD TARGETS TO INDEX ===
@@ -218,19 +207,19 @@ int main(int argc, char* argv[]) {
   std::array<float, 2> query_img_size = {static_cast<float>(query_img.cols), static_cast<float>(query_img.rows)};
 
   std::vector<int> lighterglue_match_counts(k, 0);
-  for (size_t match_idx = 0; match_idx < faiss_labels.size(); ++match_idx) {
-    faiss::idx_t idx = faiss_labels[match_idx];
-    if (idx < 0 || idx >= static_cast<faiss::idx_t>(sample_paths.size())) continue;
-    cv::Mat match_img_gray = cv::imread(sample_paths[idx], cv::IMREAD_GRAYSCALE);
-    if (match_img_gray.empty()) continue;
-    auto match_det = xfeat_onnx.detect_and_compute(match_img_gray, max_kpts);
-    std::array<float, 2> match_img_size = {static_cast<float>(match_img_gray.cols),
-                                           static_cast<float>(match_img_gray.rows)};
-    auto matches = xfeat_onnx.match(query_det, match_det, query_img);
-    lighterglue_match_counts[match_idx] = matches.size();
-    std::cout << "LighterGlue matches for Faiss match " << match_idx << " (label " << idx << "): " << matches.size()
-              << std::endl;
-  }
+  // for (size_t match_idx = 0; match_idx < faiss_labels.size(); ++match_idx) {
+  //   faiss::idx_t idx = faiss_labels[match_idx];
+  //   if (idx < 0 || idx >= static_cast<faiss::idx_t>(sample_paths.size())) continue;
+  //   cv::Mat match_img_gray = cv::imread(sample_paths[idx], cv::IMREAD_GRAYSCALE);
+  //   if (match_img_gray.empty()) continue;
+  //   auto match_det = xfeat_onnx.detect_and_compute(match_img_gray, max_kpts);
+  //   std::array<float, 2> match_img_size = {static_cast<float>(match_img_gray.cols),
+  //                                          static_cast<float>(match_img_gray.rows)};
+  //   auto matches = xfeat_onnx.match(query_det, match_det, query_img);
+  //   lighterglue_match_counts[match_idx] = matches.size();
+  //   std::cout << "LighterGlue matches for Faiss match " << match_idx << " (label " << idx << "): " << matches.size()
+  //             << std::endl;
+  // }
 
   // Visualize the query and sampled images in one big image grid
   int grid_cols = 5;

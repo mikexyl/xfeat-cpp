@@ -15,6 +15,49 @@
 
 using namespace xfeat;
 
+cv::Mat normalizePerPixel(const cv::Mat& M1) {
+  CV_Assert(M1.type() == CV_32FC(M1.channels()));
+  std::cout << "Normalizing per pixel..." << std::endl;
+  int C = M1.channels();
+  int H = M1.rows;
+  int W = M1.cols;
+
+  // Split into channels
+  std::vector<cv::Mat> chans;
+  cv::split(M1, chans);  // each (H x W), float
+
+  std::cout << "Channels split." << std::endl;
+
+  // Compute squared sum across channels
+  cv::Mat sqsum = cv::Mat::zeros(H, W, CV_32F);
+  for (int c = 0; c < C; ++c) {
+    cv::Mat tmp;
+    cv::multiply(chans[c], chans[c], tmp);  // elementwise square
+    sqsum += tmp;
+  }
+
+  std::cout << "Squared sum computed." << std::endl;
+
+  // sqrt + epsilon
+  cv::sqrt(sqsum, sqsum);
+  sqsum += 1e-8f;
+
+  std::cout << "Sqrt and epsilon added." << std::endl;
+
+  // Divide each channel by the norm
+  for (int c = 0; c < C; ++c) {
+    cv::divide(chans[c], sqsum, chans[c]);
+  }
+
+  std::cout << "Channels normalized." << std::endl;
+
+  // Merge back
+  cv::Mat M1_normed;
+  cv::merge(chans, M1_normed);
+  std::cout << "Merged normalized channels." << std::endl;
+  return M1_normed;
+}
+
 XFeatONNX::XFeatONNX(Ort::Env& env,
                      const std::string& xfeat_path,
                      const std::string& interp_bilinear_path,
@@ -394,23 +437,28 @@ DetectionResult XFeatONNX::detect_and_compute(Ort::Session& session,
     }
 
     // NMS on K1h (upsampled heatmap)
-    mkpts_mat = nms(K1h, 0.1, 20);  // Pass K1h (cv::Mat), not K1_tensor
+    mkpts_mat = nms(K1h, 0.05, 5);  // Pass K1h (cv::Mat), not K1_tensor
   } else {
     // run gftt on the original image to get better keypoints
-    std::vector<cv::Point2f> keypoints;
-    cv::goodFeaturesToTrack(gray_image, keypoints, nkpts_before_anms, 0.01, 10, noArray(), 3, false, 0.04);
+    std::vector<cv::KeyPoint> keypoints;
+    // cv::goodFeaturesToTrack(gray_image, keypoints, nkpts_before_anms, 0.001, 20, noArray(), 3, false, 0.04);
+    // std::vector<cv::KeyPoint> kpts_fast, kpts_agast;
+
+    // FAST (threshold ~10–30; enable nonmax suppression)
+    auto fast = cv::FastFeatureDetector::create(20, /*nonmax*/ true, cv::FastFeatureDetector::TYPE_9_16);
+    fast->detect(gray_image, keypoints);
 
     // resize the keypoints
     for (auto& kp : keypoints) {
-      kp.x /= resize_rate_w;
-      kp.y /= resize_rate_h;
+      kp.pt.x /= resize_rate_w;
+      kp.pt.y /= resize_rate_h;
     }
 
     // populate mkpts_mat
     mkpts_mat = cv::Mat(keypoints.size(), 2, CV_32F);
     for (size_t i = 0; i < keypoints.size(); ++i) {
-      mkpts_mat.at<float>(i, 0) = keypoints[i].x;
-      mkpts_mat.at<float>(i, 1) = keypoints[i].y;
+      mkpts_mat.at<float>(i, 0) = keypoints[i].pt.x;
+      mkpts_mat.at<float>(i, 1) = keypoints[i].pt.y;
     }
   }
 
@@ -494,7 +542,7 @@ DetectionResult XFeatONNX::detect_and_compute(Ort::Session& session,
       idxs.begin(), idxs.end(), [&](int a, int b) { return scores_mat.at<float>(a, 0) > scores_mat.at<float>(b, 0); });
   std::vector<cv::Point2f> topk_kpts;
   std::vector<float> topk_scores;
-  for (int i = 0; i < std::min(top_k, (int)idxs.size()); ++i) {
+  for (int i = 0; i < (int)idxs.size(); ++i) {
     topk_kpts.push_back(cv::Point2f(mkpts_mat.at<float>(idxs[i], 0), mkpts_mat.at<float>(idxs[i], 1)));
     topk_scores.push_back(scores_mat.at<float>(idxs[i], 0));
   }
@@ -511,6 +559,7 @@ DetectionResult XFeatONNX::detect_and_compute(Ort::Session& session,
   }
   Ort::Value topk_kpts_tensor = Ort::Value::CreateTensor<float>(
       allocator.GetInfo(), (float*)topk_kpts_mat.ptr<float>(), topk_numel, topk_shape.data(), topk_shape.size());
+
   std::vector<int64_t> M1_shape_interp = {1, C, H, W};
   size_t M1_numel = 1 * C * H * W;
   // Convert M1_normed (H, W, C) to (C, H, W) contiguous buffer
@@ -523,6 +572,7 @@ DetectionResult XFeatONNX::detect_and_compute(Ort::Session& session,
   if (M1_chw.size() != M1_numel) {
     throw std::runtime_error("M1_chw buffer size does not match shape");
   }
+
   Ort::Value M1_tensor_interp = Ort::Value::CreateTensor<float>(
       allocator.GetInfo(), M1_chw.data(), M1_numel, M1_shape_interp.data(), M1_shape_interp.size());
   std::vector<Ort::Value> bicubic_inputs;
