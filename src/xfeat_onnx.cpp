@@ -346,7 +346,11 @@ DetectionResult XFeatONNX::detect_and_compute(Ort::Session& session,
                                               int anms,
                                               int nkpts_before_anms,
                                               int keypoint_detection,
-                                              const std::vector<cv::KeyPoint>& keypoints) {
+                                              const std::vector<cv::KeyPoint>& keypoints,
+                                              cv::Mat mask) {
+  if (keypoints.size()) {
+    std::cout << "Keypoint provided: " << keypoints[0].pt << std::endl;
+  }
   // if image is in gray scale, convert to BGR
   cv::Mat color_image, gray_image;
   if (image.channels() == 1) {
@@ -443,17 +447,13 @@ DetectionResult XFeatONNX::detect_and_compute(Ort::Session& session,
     // run gftt on the original image to get better keypoints
     std::vector<cv::Point2f> new_keypoints;
     int n_needed = nkpts_before_anms - keypoints.size();
-    cv::goodFeaturesToTrack(gray_image, new_keypoints, n_needed, 0.001, 20, noArray(), 3, false, 0.04);
+    cv::goodFeaturesToTrack(gray_image, new_keypoints, n_needed, 0.001, 20, mask, 3, false, 0.04);
 
     // FAST (threshold ~10–30; enable nonmax suppression)
     // auto fast = cv::FastFeatureDetector::create(20, /*nonmax*/ true, cv::FastFeatureDetector::TYPE_9_16);
-    // fast->detect(gray_image, keypoints);
-
-    // resize the keypoints
-    for (auto& kp : new_keypoints) {
-      kp.x /= resize_rate_w;
-      kp.y /= resize_rate_h;
-    }
+    // std::vector<cv::KeyPoint> new_keypoints_cv;
+    // fast->detect(gray_image, new_keypoints_cv);
+    // cv::KeyPoint::convert(new_keypoints_cv, new_keypoints);
 
     // populate mkpts_mat
     mkpts_mat = cv::Mat(keypoints.size() + new_keypoints.size(), 2, CV_32F);
@@ -465,6 +465,12 @@ DetectionResult XFeatONNX::detect_and_compute(Ort::Session& session,
       mkpts_mat.at<float>(i + keypoints.size(), 0) = new_keypoints[i].x;
       mkpts_mat.at<float>(i + keypoints.size(), 1) = new_keypoints[i].y;
     }
+
+    // devide mkpts mat by the resize rate
+    mkpts_mat.col(0) /= resize_rate_w;
+    mkpts_mat.col(1) /= resize_rate_h;
+
+    std::cout << "mkpts_mat first row: " << mkpts_mat.row(0) << std::endl;
   }
 
   if (anms == 1) {
@@ -546,12 +552,16 @@ DetectionResult XFeatONNX::detect_and_compute(Ort::Session& session,
   std::sort(
       idxs.begin(), idxs.end(), [&](int a, int b) { return scores_mat.at<float>(a, 0) > scores_mat.at<float>(b, 0); });
   std::vector<cv::Point2f> topk_kpts;
-  cv::KeyPoint::convert(keypoints, topk_kpts);
+  for (int i = 0; i < keypoints.size(); ++i) {
+    topk_kpts.push_back(cv::Point2f(mkpts_mat.at<float>(i, 0), mkpts_mat.at<float>(i, 1)));
+  }
   std::vector<float> topk_scores(keypoints.size(), 1.0);
   for (int i = 0; i < (int)idxs.size(); ++i) {
     topk_kpts.push_back(cv::Point2f(mkpts_mat.at<float>(idxs[i], 0), mkpts_mat.at<float>(idxs[i], 1)));
     topk_scores.push_back(scores_mat.at<float>(idxs[i], 0));
   }
+  std::cout << "topk kpts first: " << topk_kpts[0] << std::endl;
+
   // Interpolate for features (bicubic)
   std::vector<int64_t> topk_shape = {1, (int64_t)topk_kpts.size(), 2};
   size_t topk_numel = 1 * topk_kpts.size() * 2;
@@ -560,6 +570,7 @@ DetectionResult XFeatONNX::detect_and_compute(Ort::Session& session,
     topk_kpts_mat.at<float>(i, 0) = topk_kpts[i].x;
     topk_kpts_mat.at<float>(i, 1) = topk_kpts[i].y;
   }
+  std::cout << "topk_kpts_mat first row: " << topk_kpts_mat.row(0) << std::endl;
   if (topk_kpts_mat.total() != topk_numel) {
     throw std::runtime_error("topk_kpts_mat buffer size does not match shape");
   }
@@ -623,6 +634,9 @@ DetectionResult XFeatONNX::detect_and_compute(Ort::Session& session,
       valid_feats.push_back(feats_mat.row(i));
     }
   }
+  if (valid_kpts.size()) {
+    std::cout << "first valid keypoint: " << valid_kpts[0].pt << std::endl;
+  }
   cv::Mat valid_kpts_mat(valid_kpts.size(), 2, CV_32F);
   for (int i = 0; i < valid_kpts.size(); ++i) {
     valid_kpts_mat.at<float>(i, 0) = valid_kpts[i].pt.x;
@@ -633,13 +647,11 @@ DetectionResult XFeatONNX::detect_and_compute(Ort::Session& session,
   for (int i = 0; i < valid_feats.size(); ++i) {
     valid_feats[i].copyTo(valid_feats_mat.row(i));
   }
+  std::cout << "valid kpts mat first row: " << valid_kpts_mat.row(0) << std::endl;
   DetectionResult det;
   det.keypoints = valid_kpts_mat;
   det.scores = valid_scores_mat;
   det.descriptors = valid_feats_mat;
-  std::cout << "num valid keypoints: " << valid_kpts.size() << std::endl;
-  std::cout << "num valid scores: " << valid_scores.size() << std::endl;
-  std::cout << "num valid descriptors: " << valid_feats.size() << " " << valid_feats.empty() << std::endl;
 
   if (std) {
     std->clear();
@@ -868,7 +880,8 @@ DetectionResult XFeatONNX::detect_and_compute(cv::Mat image,
                                               cv::Mat* M1,
                                               cv::Mat* x_prep,
                                               std::vector<cv::Vec2d>* std,
-                                              const std::vector<cv::KeyPoint>& keypoints) {
+                                              const std::vector<cv::KeyPoint>& keypoints,
+                                              cv::Mat mask) {
   return detect_and_compute(xfeat_session_,
                             image,
                             top_k,
@@ -879,7 +892,8 @@ DetectionResult XFeatONNX::detect_and_compute(cv::Mat image,
                             anms_,
                             nkpts_before_anms_,
                             keypoint_detection_,
-                            keypoints);
+                            keypoints,
+                            mask);
 }
 
 std::vector<std::vector<int>> XFeatONNX::match_mkpts_flann(const cv::Mat& feats1,

@@ -329,6 +329,10 @@ __global__ void neighbourMaskKernel(float* scores,      // in/out
   float2 p2 = kp2[j];
   float dx = p1.x - p2.x;
   float dy = p1.y - p2.y;
+  if (p1.x == 0 && p1.y == 0) {
+    scores[i + j * N1] = -FLT_MAX;
+    return;
+  }
   if (dx * dx + dy * dy > radius2) scores[i + j * N1] = -FLT_MAX;  // mask‑out
 }
 
@@ -1078,14 +1082,14 @@ EResult CuMatcher::match_mkpts_gpuRansac_E(const cv::Mat& desc1,
   CUDA_CHECK(cudaMemcpy(
       hEbest.data(), thrust::raw_pointer_cast(dEfinal.data()) + 9 * bestK, 9 * sizeof(float), cudaMemcpyDeviceToHost));
   cv::Mat Ecv = (cv::Mat_<float>(3, 3) << hEbest[0],
-              hEbest[1],
-              hEbest[2],
-              hEbest[3],
-              hEbest[4],
-              hEbest[5],
-              hEbest[6],
-              hEbest[7],
-              hEbest[8]);
+                 hEbest[1],
+                 hEbest[2],
+                 hEbest[3],
+                 hEbest[4],
+                 hEbest[5],
+                 hEbest[6],
+                 hEbest[7],
+                 hEbest[8]);
 
   // mask on host (K small; for speed you can add a device kernel)
   thrust::host_vector<float2> hX1 = dX1, hX2 = dX2;

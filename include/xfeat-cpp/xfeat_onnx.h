@@ -64,7 +64,8 @@ class XFeatONNX {
                                      cv::Mat* M1 = nullptr,
                                      cv::Mat* x_prep = nullptr,
                                      std::vector<cv::Vec2d>* std = nullptr,
-                                     const std::vector<cv::KeyPoint>& keypoints = {});
+                                     const std::vector<cv::KeyPoint>& keypoints = {},
+                                     cv::Mat mask = {});
 
  private:
   Ort::SessionOptions session_options_;
@@ -106,7 +107,8 @@ class XFeatONNX {
                                      int anms = 0,
                                      int nkpts_before_anms = 0,
                                      int keypoint_detection = 0,
-                                     const std::vector<cv::KeyPoint>& keypoints = {});
+                                     const std::vector<cv::KeyPoint>& keypoints = {},
+                                     cv::Mat mask = {});
 
   std::vector<std::vector<int>> match_mkpts_bf(const cv::Mat& feats1, const cv::Mat& feats2, float min_cossim = 0.82f);
 

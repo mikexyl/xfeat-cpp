@@ -58,16 +58,22 @@ class XFeatCV : public cv::Feature2D {
     // Ensure the input image is valid
     CV_Assert(image.type() == CV_8UC1 || image.type() == CV_8UC3);
 
+    if (keypoints.size()) {
+      std::cout << keypoints[0].pt << std::endl;
+    }
+
     // Call the XFeatONNX method to detect and compute keypoints and descriptors
     auto result =
         xfeat_onnx_.detect_and_compute(image.getMat(), params_.max_features, nullptr, M1, x_prep, stds, keypoints);
-    std::cout << "descritpro empty? " << result.descriptors.empty() << std::endl;
 
     keypoints.clear();
     for (int i = 0; i < result.keypoints.rows; i++) {
       KeyPoint kp;
       kp.pt = Point2f(result.keypoints.at<float>(i, 0), result.keypoints.at<float>(i, 1));
       keypoints.push_back(kp);
+    }
+    if (keypoints.size()) {
+      std::cout << keypoints[0].pt << std::endl;
     }
     if (!result.descriptors.empty()) {
       // copy the descriptors to the output

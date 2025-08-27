@@ -106,7 +106,7 @@ int main(int argc, char* argv[]) {
   std::filesystem::path image2_path = image_folder / "sample2.jpg";
 
   const std::string image_resolution = "640x480";
-  constexpr int max_kpts = 500;  // Default maximum keypoints to detect
+  constexpr int max_kpts = 1000;  // Default maximum keypoints to detect
 
   std::filesystem::path xfeat_model_folder = (argc > 2) ? argv[2] : "onnx_model";
   std::filesystem::path xfeat_model_path = xfeat_model_folder / ("xfeat_" + image_resolution + ".onnx");
@@ -136,17 +136,16 @@ int main(int argc, char* argv[]) {
                                                        true);  // Use GPU
 
   XFeatONNX xfeat_onnx(env,
-                       XFeatONNX::Params{
-                           .xfeat_path = xfeat_model_path.string(),
-                           .interp_bilinear_path = interp_bilinear_path.string(),
-                           .interp_bicubic_path = interp_bicubic_path.string(),
-                           .interp_nearest_path = interp_nearest_path.string(),
-                           .use_gpu = true,
-                           .nkpts = max_kpts,
-                           .matcher_type = MatcherType::GPU_BF,
-                           .anms = 1,
-                           .nkpts_before_anms = 1000,
-                       },
+                       XFeatONNX::Params{.xfeat_path = xfeat_model_path.string(),
+                                         .interp_bilinear_path = interp_bilinear_path.string(),
+                                         .interp_bicubic_path = interp_bicubic_path.string(),
+                                         .interp_nearest_path = interp_nearest_path.string(),
+                                         .use_gpu = true,
+                                         .nkpts = max_kpts,
+                                         .matcher_type = MatcherType::GPU_BF,
+                                         .anms = 0,
+                                         .nkpts_before_anms = 1000,
+                                         .keypoint_detection = 1},
                        std::move(lighterglue));
 
   xfeat::CuMatcher gpu_matcher;
@@ -166,19 +165,6 @@ int main(int argc, char* argv[]) {
     std::cerr << "ONNX Runtime Exception during warmup: " << e.what() << std::endl;
     return 1;
   }
-
-  auto start = std::chrono::high_resolution_clock::now();
-  TimingStats timing_stats;
-  cv::Mat heatmap1, heatmap2;
-  std::vector<cv::Vec2d> std1;
-  std::vector<cv::Vec2d> std2;
-  result1 = xfeat_onnx.detect_and_compute(image1, max_kpts, &heatmap1, {}, {}, &std1);
-  result2 = xfeat_onnx.detect_and_compute(image2, max_kpts, &heatmap2, {}, {}, &std2);
-  auto end = std::chrono::high_resolution_clock::now();
-  std::chrono::duration<double, std::milli> duration = end - start;
-  std::cout << "xfeat_onnx detection on 2 images (size: " << image1.cols << "x" << image1.rows << ") took "
-            << duration.count() << "ms." << std::endl;
-
   // Compare with OpenCV's goodFeaturesToTrack
   auto opencv_start = std::chrono::high_resolution_clock::now();
   std::vector<cv::Point2f> opencv_corners1, opencv_corners2;
@@ -189,6 +175,25 @@ int main(int argc, char* argv[]) {
   std::cout << "OpenCV goodFeaturesToTrack on 2 images (size: " << image1.cols << "x" << image1.rows << ") took "
             << opencv_duration.count() << "ms." << std::endl;
   std::cout << "OpenCV detected corners: image1=" << opencv_corners1.size() << ", image2=" << opencv_corners2.size()
+            << std::endl;
+
+  auto start = std::chrono::high_resolution_clock::now();
+  TimingStats timing_stats;
+  cv::Mat heatmap1, heatmap2;
+  std::vector<cv::Vec2d> std1;
+  std::vector<cv::Vec2d> std2;
+  std::vector<cv::KeyPoint> opencv_keypoints1, opencv_keypoints2;
+  cv::KeyPoint::convert(opencv_corners1, opencv_keypoints1);
+  opencv_keypoints1.resize(200);
+  result1 = xfeat_onnx.detect_and_compute(image1, max_kpts, &heatmap1, {}, {}, &std1, opencv_keypoints1);
+  result2 = xfeat_onnx.detect_and_compute(image2, max_kpts, &heatmap2, {}, {}, &std2);
+  auto end = std::chrono::high_resolution_clock::now();
+  std::chrono::duration<double, std::milli> duration = end - start;
+  std::cout << "xfeat_onnx detection on 2 images (size: " << image1.cols << "x" << image1.rows << ") took "
+            << duration.count() << "ms." << std::endl;
+  std::cout << "xfeat detected: image1=" << result1.keypoints.rows << ", image2=" << result2.keypoints.rows
+            << std::endl;
+  std::cout << "xfeat descriptors: image1=" << result1.descriptors.rows << ", image2=" << result2.descriptors.rows
             << std::endl;
 
   // Also compare with ORB detector for feature detection + description
@@ -225,7 +230,7 @@ int main(int argc, char* argv[]) {
   cv::Mat E;
   std::vector<cv::DMatch> matches;
   // matches = gpu_matcher.match_gpuRansac(result1, result2, 0.4f, 512, fx, fy, cx, cy, &E);
-  matches = gpu_matcher.match(result1, result2, 0.7, H, 100, 1, image1.size());
+  matches = gpu_matcher.match(result1, result2, 0.9, H, 100, 0, image1.size());
   auto t_end = std::chrono::high_resolution_clock::now();
   match_timing_stats["gpu_match_mkpts_gpuRansac"] = std::chrono::duration<double, std::milli>(t_end - t_start).count();
 
