@@ -46,9 +46,9 @@ class XFeatCV : public cv::Feature2D {
                         cv::Mat* M1,
                         cv::Mat* x_prep,
                         std::vector<cv::Vec2d>* stds = nullptr) {
-    // not implemented
-    CV_Assert(!useProvidedKeypoints);
-
+    if (not useProvidedKeypoints) {
+      keypoints.clear();
+    }
     if (not descriptors.empty()) {
       CV_Error(Error::StsBadArg, "Output descriptors must be empty.");
     }
@@ -57,11 +57,13 @@ class XFeatCV : public cv::Feature2D {
 
     // Ensure the input image is valid
     CV_Assert(image.type() == CV_8UC1 || image.type() == CV_8UC3);
-    // Clear keypoints and descriptors
-    keypoints.clear();
-    // Call the XFeatONNX method to detect and compute keypoints and descriptors
 
-    auto result = xfeat_onnx_.detect_and_compute(image.getMat(), params_.max_features, nullptr, M1, x_prep, stds);
+    // Call the XFeatONNX method to detect and compute keypoints and descriptors
+    auto result =
+        xfeat_onnx_.detect_and_compute(image.getMat(), params_.max_features, nullptr, M1, x_prep, stds, keypoints);
+    std::cout << "descritpro empty? " << result.descriptors.empty() << std::endl;
+
+    keypoints.clear();
     for (int i = 0; i < result.keypoints.rows; i++) {
       KeyPoint kp;
       kp.pt = Point2f(result.keypoints.at<float>(i, 0), result.keypoints.at<float>(i, 1));

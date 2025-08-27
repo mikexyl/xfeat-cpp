@@ -27,7 +27,7 @@ class XFeatONNX {
     MatcherType matcher_type = MatcherType::FLANN;  // Default to BFMatcher
     int anms = 0;                                   // Default no anms
     int nkpts_before_anms = 0;                      // Default no keypoints before ANMS
-    int keypoint_detection = 0;                      // Default xfeat keypoint detection
+    int keypoint_detection = 0;                     // Default xfeat keypoint detection
   };
 
   XFeatONNX(Ort::Env& env, const Params& params, std::unique_ptr<LighterGlueOnnx> lighterglue = nullptr);
@@ -63,7 +63,8 @@ class XFeatONNX {
                                      cv::Mat* heatmap = nullptr,
                                      cv::Mat* M1 = nullptr,
                                      cv::Mat* x_prep = nullptr,
-                                     std::vector<cv::Vec2d>* std = nullptr);
+                                     std::vector<cv::Vec2d>* std = nullptr,
+                                     const std::vector<cv::KeyPoint>& keypoints = {});
 
  private:
   Ort::SessionOptions session_options_;
@@ -104,7 +105,8 @@ class XFeatONNX {
                                      std::vector<cv::Vec2d>* std = nullptr,
                                      int anms = 0,
                                      int nkpts_before_anms = 0,
-                                     int keypoint_detection = 0);
+                                     int keypoint_detection = 0,
+                                     const std::vector<cv::KeyPoint>& keypoints = {});
 
   std::vector<std::vector<int>> match_mkpts_bf(const cv::Mat& feats1, const cv::Mat& feats2, float min_cossim = 0.82f);
 

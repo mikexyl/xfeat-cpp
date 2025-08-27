@@ -345,7 +345,8 @@ DetectionResult XFeatONNX::detect_and_compute(Ort::Session& session,
                                               std::vector<cv::Vec2d>* std,
                                               int anms,
                                               int nkpts_before_anms,
-                                              int keypoint_detection) {
+                                              int keypoint_detection,
+                                              const std::vector<cv::KeyPoint>& keypoints) {
   // if image is in gray scale, convert to BGR
   cv::Mat color_image, gray_image;
   if (image.channels() == 1) {
@@ -440,25 +441,29 @@ DetectionResult XFeatONNX::detect_and_compute(Ort::Session& session,
     mkpts_mat = nms(K1h, 0.05, 5);  // Pass K1h (cv::Mat), not K1_tensor
   } else {
     // run gftt on the original image to get better keypoints
-    std::vector<cv::KeyPoint> keypoints;
-    // cv::goodFeaturesToTrack(gray_image, keypoints, nkpts_before_anms, 0.001, 20, noArray(), 3, false, 0.04);
-    // std::vector<cv::KeyPoint> kpts_fast, kpts_agast;
+    std::vector<cv::Point2f> new_keypoints;
+    int n_needed = nkpts_before_anms - keypoints.size();
+    cv::goodFeaturesToTrack(gray_image, new_keypoints, n_needed, 0.001, 20, noArray(), 3, false, 0.04);
 
     // FAST (threshold ~10–30; enable nonmax suppression)
-    auto fast = cv::FastFeatureDetector::create(20, /*nonmax*/ true, cv::FastFeatureDetector::TYPE_9_16);
-    fast->detect(gray_image, keypoints);
+    // auto fast = cv::FastFeatureDetector::create(20, /*nonmax*/ true, cv::FastFeatureDetector::TYPE_9_16);
+    // fast->detect(gray_image, keypoints);
 
     // resize the keypoints
-    for (auto& kp : keypoints) {
-      kp.pt.x /= resize_rate_w;
-      kp.pt.y /= resize_rate_h;
+    for (auto& kp : new_keypoints) {
+      kp.x /= resize_rate_w;
+      kp.y /= resize_rate_h;
     }
 
     // populate mkpts_mat
-    mkpts_mat = cv::Mat(keypoints.size(), 2, CV_32F);
+    mkpts_mat = cv::Mat(keypoints.size() + new_keypoints.size(), 2, CV_32F);
     for (size_t i = 0; i < keypoints.size(); ++i) {
       mkpts_mat.at<float>(i, 0) = keypoints[i].pt.x;
       mkpts_mat.at<float>(i, 1) = keypoints[i].pt.y;
+    }
+    for (size_t i = 0; i < new_keypoints.size(); ++i) {
+      mkpts_mat.at<float>(i + keypoints.size(), 0) = new_keypoints[i].x;
+      mkpts_mat.at<float>(i + keypoints.size(), 1) = new_keypoints[i].y;
     }
   }
 
@@ -536,12 +541,13 @@ DetectionResult XFeatONNX::detect_and_compute(Ort::Session& session,
     }
   }
   // Sort by scores and select top_k
-  std::vector<int> idxs(mkpts_mat.rows);
-  std::iota(idxs.begin(), idxs.end(), 0);
+  std::vector<int> idxs(mkpts_mat.rows - keypoints.size());
+  std::iota(idxs.begin(), idxs.end(), keypoints.size());
   std::sort(
       idxs.begin(), idxs.end(), [&](int a, int b) { return scores_mat.at<float>(a, 0) > scores_mat.at<float>(b, 0); });
   std::vector<cv::Point2f> topk_kpts;
-  std::vector<float> topk_scores;
+  cv::KeyPoint::convert(keypoints, topk_kpts);
+  std::vector<float> topk_scores(keypoints.size(), 1.0);
   for (int i = 0; i < (int)idxs.size(); ++i) {
     topk_kpts.push_back(cv::Point2f(mkpts_mat.at<float>(idxs[i], 0), mkpts_mat.at<float>(idxs[i], 1)));
     topk_scores.push_back(scores_mat.at<float>(idxs[i], 0));
@@ -611,7 +617,7 @@ DetectionResult XFeatONNX::detect_and_compute(Ort::Session& session,
   std::vector<float> valid_scores;
   std::vector<cv::Mat> valid_feats;
   for (int i = 0; i < n_kpts; ++i) {
-    if (topk_scores[i] > 0) {
+    if (topk_scores[i] > 0 or i < keypoints.size()) {
       valid_kpts.push_back({topk_kpts[i], 1});
       valid_scores.push_back(topk_scores[i]);
       valid_feats.push_back(feats_mat.row(i));
@@ -631,6 +637,9 @@ DetectionResult XFeatONNX::detect_and_compute(Ort::Session& session,
   det.keypoints = valid_kpts_mat;
   det.scores = valid_scores_mat;
   det.descriptors = valid_feats_mat;
+  std::cout << "num valid keypoints: " << valid_kpts.size() << std::endl;
+  std::cout << "num valid scores: " << valid_scores.size() << std::endl;
+  std::cout << "num valid descriptors: " << valid_feats.size() << " " << valid_feats.empty() << std::endl;
 
   if (std) {
     std->clear();
@@ -858,9 +867,19 @@ DetectionResult XFeatONNX::detect_and_compute(cv::Mat image,
                                               cv::Mat* heatmap,
                                               cv::Mat* M1,
                                               cv::Mat* x_prep,
-                                              std::vector<cv::Vec2d>* std) {
-  return detect_and_compute(
-      xfeat_session_, image, top_k, heatmap, M1, x_prep, std, anms_, nkpts_before_anms_, keypoint_detection_);
+                                              std::vector<cv::Vec2d>* std,
+                                              const std::vector<cv::KeyPoint>& keypoints) {
+  return detect_and_compute(xfeat_session_,
+                            image,
+                            top_k,
+                            heatmap,
+                            M1,
+                            x_prep,
+                            std,
+                            anms_,
+                            nkpts_before_anms_,
+                            keypoint_detection_,
+                            keypoints);
 }
 
 std::vector<std::vector<int>> XFeatONNX::match_mkpts_flann(const cv::Mat& feats1,
