@@ -348,9 +348,6 @@ DetectionResult XFeatONNX::detect_and_compute(Ort::Session& session,
                                               int keypoint_detection,
                                               const std::vector<cv::KeyPoint>& keypoints,
                                               cv::Mat mask) {
-  if (keypoints.size()) {
-    std::cout << "Keypoint provided: " << keypoints[0].pt << std::endl;
-  }
   // if image is in gray scale, convert to BGR
   cv::Mat color_image, gray_image;
   if (image.channels() == 1) {
@@ -434,15 +431,27 @@ DetectionResult XFeatONNX::detect_and_compute(Ort::Session& session,
 
   // Get heatmap K1h
   cv::Mat K1h = get_kpts_heatmap(K1_tensor);
+  // Save heatmap for debugging
+  if (heatmap) {
+    *heatmap = K1h;  // Copy to output heatmap
+  }
 
   if (keypoint_detection == 0) {
-    // Save heatmap for debugging
-    if (heatmap) {
-      *heatmap = K1h;  // Copy to output heatmap
+    if (keypoints.size() != top_k) {
+      std::cerr << "xfeat detection temporarily disabled. Keypoints size mismatch: expected " << top_k << ", got "
+                << keypoints.size() << std::endl;
+      throw std::runtime_error("Keypoints size mismatch");
     }
 
-    // NMS on K1h (upsampled heatmap)
-    mkpts_mat = nms(K1h, 0.05, 5);  // Pass K1h (cv::Mat), not K1_tensor
+    // populate mkpts_mat
+    mkpts_mat = cv::Mat(keypoints.size(), 2, CV_32F);
+    for (size_t i = 0; i < keypoints.size(); ++i) {
+      mkpts_mat.at<float>(i, 0) = keypoints[i].pt.x;
+      mkpts_mat.at<float>(i, 1) = keypoints[i].pt.y;
+    }
+
+    mkpts_mat.col(0) /= resize_rate_w;
+    mkpts_mat.col(1) /= resize_rate_h;
   } else {
     // run gftt on the original image to get better keypoints
     std::vector<cv::Point2f> new_keypoints;
@@ -469,8 +478,6 @@ DetectionResult XFeatONNX::detect_and_compute(Ort::Session& session,
     // devide mkpts mat by the resize rate
     mkpts_mat.col(0) /= resize_rate_w;
     mkpts_mat.col(1) /= resize_rate_h;
-
-    std::cout << "mkpts_mat first row: " << mkpts_mat.row(0) << std::endl;
   }
 
   if (anms == 1) {
@@ -560,7 +567,6 @@ DetectionResult XFeatONNX::detect_and_compute(Ort::Session& session,
     topk_kpts.push_back(cv::Point2f(mkpts_mat.at<float>(idxs[i], 0), mkpts_mat.at<float>(idxs[i], 1)));
     topk_scores.push_back(scores_mat.at<float>(idxs[i], 0));
   }
-  std::cout << "topk kpts first: " << topk_kpts[0] << std::endl;
 
   // Interpolate for features (bicubic)
   std::vector<int64_t> topk_shape = {1, (int64_t)topk_kpts.size(), 2};
@@ -570,7 +576,6 @@ DetectionResult XFeatONNX::detect_and_compute(Ort::Session& session,
     topk_kpts_mat.at<float>(i, 0) = topk_kpts[i].x;
     topk_kpts_mat.at<float>(i, 1) = topk_kpts[i].y;
   }
-  std::cout << "topk_kpts_mat first row: " << topk_kpts_mat.row(0) << std::endl;
   if (topk_kpts_mat.total() != topk_numel) {
     throw std::runtime_error("topk_kpts_mat buffer size does not match shape");
   }
@@ -634,9 +639,6 @@ DetectionResult XFeatONNX::detect_and_compute(Ort::Session& session,
       valid_feats.push_back(feats_mat.row(i));
     }
   }
-  if (valid_kpts.size()) {
-    std::cout << "first valid keypoint: " << valid_kpts[0].pt << std::endl;
-  }
   cv::Mat valid_kpts_mat(valid_kpts.size(), 2, CV_32F);
   for (int i = 0; i < valid_kpts.size(); ++i) {
     valid_kpts_mat.at<float>(i, 0) = valid_kpts[i].pt.x;
@@ -647,7 +649,6 @@ DetectionResult XFeatONNX::detect_and_compute(Ort::Session& session,
   for (int i = 0; i < valid_feats.size(); ++i) {
     valid_feats[i].copyTo(valid_feats_mat.row(i));
   }
-  std::cout << "valid kpts mat first row: " << valid_kpts_mat.row(0) << std::endl;
   DetectionResult det;
   det.keypoints = valid_kpts_mat;
   det.scores = valid_scores_mat;
@@ -738,8 +739,6 @@ std::vector<cv::DMatch> XFeatONNX::match(cv::Mat image1,
   auto result2 = detect_and_compute(xfeat_session_, image2, top_k, heatmap2);
   auto t2 = std::chrono::high_resolution_clock::now();
 
-  std::cout << "detected keypoints in image1: " << result1.keypoints.rows << ", image2: " << result2.keypoints.rows
-            << std::endl;
 
   auto match_start = std::chrono::high_resolution_clock::now();
   auto match_result = match(result1, result2, image1, min_cossim, timing_stats);
@@ -817,7 +816,6 @@ std::vector<cv::DMatch> XFeatONNX::match(const DetectionResult& result1,
   cv::Mat mkpts1(num_matched, 2, CV_32F);
   cv::Mat mkpts2(num_matched, 2, CV_32F);
   std::set<int> matched_indices2_set;
-  std::cout << "Number of matched keypoints: " << num_matched << std::endl;
   for (size_t i = 0; i < indexes.size(); ++i) {
     if (indexes[i].empty()) {
       continue;

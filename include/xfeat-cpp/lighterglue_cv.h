@@ -1,8 +1,11 @@
 #pragma once
 
+#include <algorithm>
+#include <numeric>
 #include <opencv2/core.hpp>
 #include <opencv2/features2d.hpp>
 #include <string>
+#include <tuple>
 
 #include "xfeat-cpp/lighterglue_onnx.h"
 #include "xfeat-cpp/types.h"
@@ -42,9 +45,9 @@ class LighterGlueCV {
   }
 
   // OpenCV-style: match keypoints and descriptors from two images
-  void match(const DetectionResult& query_det,
+  void match(DetectionResult& query_det,
              const cv::Size& image0_size,
-             const DetectionResult& train_det,
+             DetectionResult& train_det,
              const cv::Size& image1_size,
              std::vector<cv::DMatch>& matches) /* not const */ {
     if (query_det.keypoints.empty() || train_det.keypoints.empty()) {
@@ -54,13 +57,51 @@ class LighterGlueCV {
     if (query_det.descriptors.empty() || train_det.descriptors.empty()) {
       throw std::runtime_error("Descriptors are empty in one of the detection results.");
     }
+
+    if (query_det.keypoints.rows != query_det.scores.rows) {
+      throw std::runtime_error("Query keypoints and scores size mismatch: " + std::to_string(query_det.keypoints.rows) +
+                               " vs " + std::to_string(query_det.scores.rows));
+    }
+    if (train_det.keypoints.rows != train_det.scores.rows) {
+      throw std::runtime_error("Train keypoints and scores size mismatch: " + std::to_string(train_det.keypoints.rows) +
+                               " vs " + std::to_string(train_det.scores.rows));
+    }
+
     if (query_det.keypoints.rows != query_det.descriptors.rows ||
         train_det.keypoints.rows != train_det.descriptors.rows) {
       throw std::runtime_error("Keypoints and descriptors row count mismatch.");
     }
+    std::vector<int> query_resampled_ids, train_resampled_ids;
     // check if number of keypoints EQUALS n_kpts
     if (query_det.keypoints.rows != params_.n_kpts || train_det.keypoints.rows != params_.n_kpts) {
-      throw std::runtime_error("Number of keypoints does not match the expected n_kpts.");
+      // Check if we have enough keypoints in both images
+      if (query_det.keypoints.rows < params_.n_kpts) {
+        throw std::runtime_error("Query image has " + std::to_string(query_det.keypoints.rows) + " keypoints, but " +
+                                 std::to_string(params_.n_kpts) + " are required.");
+      }
+      if (train_det.keypoints.rows < params_.n_kpts) {
+        throw std::runtime_error("Train image has " + std::to_string(train_det.keypoints.rows) + " keypoints, but " +
+                                 std::to_string(params_.n_kpts) + " are required.");
+      }
+
+      // if there are more keypoints than we need, take the highest scores top k points
+      if (query_det.keypoints.rows > params_.n_kpts) {
+        auto [resampled_kpts, resampled_scores, resampled_desc, original_ids] =
+            resampleTopK(query_det.keypoints, query_det.scores, query_det.descriptors, params_.n_kpts);
+        query_det.keypoints = resampled_kpts;
+        query_det.scores = resampled_scores;
+        query_det.descriptors = resampled_desc;
+        query_resampled_ids = original_ids;
+      }
+
+      if (train_det.keypoints.rows > params_.n_kpts) {
+        auto [resampled_kpts, resampled_scores, resampled_desc, original_ids] =
+            resampleTopK(train_det.keypoints, train_det.scores, train_det.descriptors, params_.n_kpts);
+        train_det.keypoints = resampled_kpts;
+        train_det.scores = resampled_scores;
+        train_det.descriptors = resampled_desc;
+        train_resampled_ids = original_ids;
+      }
     }
 
     std::array<float, 2> size0 = {static_cast<float>(image0_size.width), static_cast<float>(image0_size.height)};
@@ -68,8 +109,13 @@ class LighterGlueCV {
     auto indexes = matcher_.match(query_det, size0, train_det, size1, min_score_);
     matches.clear();
     for (size_t i = 0; i < indexes.size(); ++i) {
-      if (indexes[i].empty()) continue;                       // No matches for this keypoint
-      matches.emplace_back(cv::DMatch(i, indexes[i][0], 0));  // Use first match only
+      if (indexes[i].empty()) continue;  // No matches for this keypoint
+
+      // Map back to original indices if resampling was performed
+      int query_idx = query_resampled_ids.empty() ? static_cast<int>(i) : query_resampled_ids[i];
+      int train_idx = train_resampled_ids.empty() ? indexes[i][0] : train_resampled_ids[indexes[i][0]];
+
+      matches.emplace_back(cv::DMatch(query_idx, train_idx, 0));  // Use first match only
     }
   }
 
@@ -86,6 +132,50 @@ class LighterGlueCV {
  private:
   LighterGlueOnnx matcher_;
   float min_score_;
+
+  // Helper function to resample top K keypoints based on scores
+  std::tuple<cv::Mat, cv::Mat, cv::Mat, std::vector<int>> resampleTopK(const cv::Mat& keypoints,
+                                                                       const cv::Mat& scores,
+                                                                       const cv::Mat& descriptors,
+                                                                       int k) {
+    if (keypoints.rows <= k) {
+      throw std::runtime_error("Not enough keypoints to resample");
+    }
+
+    // Create pairs of (score, index) for sorting
+    std::vector<std::pair<float, int>> score_index_pairs;
+    score_index_pairs.reserve(scores.rows);
+
+    for (int i = 0; i < scores.rows; ++i) {
+      score_index_pairs.emplace_back(scores.at<float>(i), i);
+    }
+
+    // Sort by score in descending order (highest scores first)
+    std::sort(score_index_pairs.begin(),
+              score_index_pairs.end(),
+              [](const std::pair<float, int>& a, const std::pair<float, int>& b) { return a.first > b.first; });
+
+    // Extract top k indices
+    std::vector<int> top_k_indices;
+    top_k_indices.reserve(k);
+    for (int i = 0; i < k; ++i) {
+      top_k_indices.push_back(score_index_pairs[i].second);
+    }
+
+    // Create new matrices with top k elements
+    cv::Mat new_keypoints(k, keypoints.cols, keypoints.type());
+    cv::Mat new_scores(k, scores.cols, scores.type());
+    cv::Mat new_descriptors(k, descriptors.cols, descriptors.type());
+
+    for (int i = 0; i < k; ++i) {
+      int original_idx = top_k_indices[i];
+      keypoints.row(original_idx).copyTo(new_keypoints.row(i));
+      scores.row(original_idx).copyTo(new_scores.row(i));
+      descriptors.row(original_idx).copyTo(new_descriptors.row(i));
+    }
+
+    return {new_keypoints, new_scores, new_descriptors, top_k_indices};
+  }
 };
 
 }  // namespace xfeat
