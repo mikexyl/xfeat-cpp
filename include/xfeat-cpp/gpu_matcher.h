@@ -52,8 +52,9 @@ class CuMatcher {
       kpts1_warped = keypoints1;  // no warp, use original
     }
 
+    std::vector<float> scores;
     auto [indexes1, indexes2] = this->match_mkpts_local(
-        result1.descriptors, result2.descriptors, kpts1_warped, keypoints2, search_radius, min_sim);
+        result1.descriptors, result2.descriptors, kpts1_warped, keypoints2, search_radius, min_sim, &scores);
 
     size_t num_matched = indexes1.size();
 
@@ -106,18 +107,17 @@ class CuMatcher {
         int local_search_radius = search_radius * 0.05;          // e.g. 3.0 for search_radius=60
         local_search_radius = std::max(local_search_radius, 5);  // Ensure it's at least 5
         auto [rematch_id1, rematch_id2] = this->match_mkpts_local(
-            result1.descriptors, result2.descriptors, kpts1_warped, keypoints2, local_search_radius, min_sim);
+            result1.descriptors, result2.descriptors, kpts1_warped, keypoints2, local_search_radius, min_sim, &scores);
 
         for (int i = 0; i < rematch_id1.size(); ++i) {
           if (rematch_id1[i] >= 0 && rematch_id2[i] >= 0) {
-            matches.emplace_back(rematch_id1[i], rematch_id2[i], 0.0f);
+            matches.emplace_back(rematch_id1[i], rematch_id2[i], scores[i]);
           }
         }
       } else {
         // populate matches with inliers
         for (size_t i = 0; i < inlier_indices1.size(); ++i) {
-          matches.emplace_back(inlier_indices1[i], inlier_indices2[i],
-                               0.0f);  // Assuming distance is not used here
+          matches.emplace_back(inlier_indices1[i], inlier_indices2[i], scores[i]);
         }
       }
     } else if (filtering == 2) {
@@ -150,7 +150,8 @@ class CuMatcher {
                                                                    const std::vector<cv::Point2f>& kp1,
                                                                    const std::vector<cv::Point2f>& kp2,
                                                                    float search_radius,
-                                                                   float min_cossim = 0.f);
+                                                                   float min_cossim = 0.f,
+                                                                   std::vector<float>* scores = nullptr);
 
   struct GpuMatchResult {
     std::vector<std::pair<int, int>> matches;  // same as before

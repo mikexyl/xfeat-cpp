@@ -13,13 +13,10 @@ inline std::vector<int> calc_warp_corners_and_matches(const cv::Mat& ref_points,
                                                       cv::Mat* H) {
   // Compute homography (use cv::RANSAC as int for compatibility)
   cv::Mat mask;
-  try {
-    *H = cv::findHomography(ref_points, dst_points, cv::RANSAC, 3.5, mask, 200, 0.9);
-  } catch (...) {
-    std::cout << "Homography estimation failed." << std::endl;
-    std::cout << "inputs: " << ref_points.size() << " " << dst_points.size() << std::endl;
-    throw;
+  if (ref_points.empty() || dst_points.empty()) {
+    return {};
   }
+  *H = cv::findHomography(ref_points, dst_points, cv::RANSAC, 3.5, mask, 200, 0.9);
   if (H->empty()) {
     std::cerr << "Homography estimation failed." << std::endl;
     return {};

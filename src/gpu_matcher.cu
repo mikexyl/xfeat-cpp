@@ -340,12 +340,14 @@ __global__ void neighbourMaskKernel(float* scores,      // in/out
 // CuMatcher::match_mkpts_local
 //   – local (radius‑limited) GPU brute‑force matcher
 // ---------------------------------------------------------------------------
-std::tuple<std::vector<int>, std::vector<int>> CuMatcher::match_mkpts_local(const cv::Mat& desc1,
-                                                                            const cv::Mat& desc2,
-                                                                            const std::vector<cv::Point2f>& kp1,
-                                                                            const std::vector<cv::Point2f>& kp2,
-                                                                            float search_radius,  // pixels
-                                                                            float min_cossim)  // threshold (≤0 ⇒ off)
+std::tuple<std::vector<int>, std::vector<int>> CuMatcher::match_mkpts_local(
+    const cv::Mat& desc1,
+    const cv::Mat& desc2,
+    const std::vector<cv::Point2f>& kp1,
+    const std::vector<cv::Point2f>& kp2,
+    float search_radius,  // pixels
+    float min_cossim,
+    std::vector<float>* scores)  // threshold (≤0 ⇒ off)
 {
   const int N1 = desc1.rows, N2 = desc2.rows, D = desc1.cols;
   CV_Assert(desc1.type() == CV_32F && desc2.type() == CV_32F && D == desc2.cols && kp1.size() == (size_t)N1 &&
@@ -408,6 +410,16 @@ std::tuple<std::vector<int>, std::vector<int>> CuMatcher::match_mkpts_local(cons
         (min_cossim <= 0.f || score > min_cossim)) {
       idx0.push_back(i);
       idx1.push_back(j);
+      if (scores) scores->push_back(score);
+    }
+  }
+
+  if (scores) {
+    // normalize scores
+    float min_score = *std::min_element(scores->begin(), scores->end());
+    float max_score = *std::max_element(scores->begin(), scores->end());
+    for (size_t i = 0; i < scores->size(); ++i) {
+      (*scores)[i] = ((*scores)[i] - min_score) / (max_score - min_score);
     }
   }
   return {std::move(idx0), std::move(idx1)};

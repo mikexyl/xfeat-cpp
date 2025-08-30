@@ -83,7 +83,14 @@ class XFeatCV : public cv::Feature2D {
     if (scores) {
       scores->clear();
       for (size_t i = 0; i < keypoints.size(); ++i) {
-        scores->push_back(static_cast<double>(result.scores.at<float>(i)));
+        float score = result.scores.at<float>(i);
+        scores->push_back(score);
+      }
+
+      // normalize scores
+      auto [min, max] = std::minmax_element(scores->begin(), scores->end());
+      for (auto& score : *scores) {
+        score = (score - *min) / (*max - *min);
       }
     }
   }
