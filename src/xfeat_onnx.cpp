@@ -437,21 +437,19 @@ DetectionResult XFeatONNX::detect_and_compute(Ort::Session& session,
   }
 
   if (keypoint_detection == 0) {
-    if (keypoints.size() != top_k) {
-      std::cerr << "xfeat detection temporarily disabled. Keypoints size mismatch: expected " << top_k << ", got "
-                << keypoints.size() << std::endl;
-      throw std::runtime_error("Keypoints size mismatch");
-    }
+    if (keypoints.size() == 0) {
+      mkpts_mat = nms(K1h, 0.05, 5);  // Pass K1h (cv::Mat), not K1_tensor
+    } else {
+      // populate mkpts_mat
+      mkpts_mat = cv::Mat(keypoints.size(), 2, CV_32F);
+      for (size_t i = 0; i < keypoints.size(); ++i) {
+        mkpts_mat.at<float>(i, 0) = keypoints[i].pt.x;
+        mkpts_mat.at<float>(i, 1) = keypoints[i].pt.y;
+      }
 
-    // populate mkpts_mat
-    mkpts_mat = cv::Mat(keypoints.size(), 2, CV_32F);
-    for (size_t i = 0; i < keypoints.size(); ++i) {
-      mkpts_mat.at<float>(i, 0) = keypoints[i].pt.x;
-      mkpts_mat.at<float>(i, 1) = keypoints[i].pt.y;
+      mkpts_mat.col(0) /= resize_rate_w;
+      mkpts_mat.col(1) /= resize_rate_h;
     }
-
-    mkpts_mat.col(0) /= resize_rate_w;
-    mkpts_mat.col(1) /= resize_rate_h;
   } else {
     // run gftt on the original image to get better keypoints
     std::vector<cv::Point2f> new_keypoints;
@@ -738,7 +736,6 @@ std::vector<cv::DMatch> XFeatONNX::match(cv::Mat image1,
   auto t1 = std::chrono::high_resolution_clock::now();
   auto result2 = detect_and_compute(xfeat_session_, image2, top_k, heatmap2);
   auto t2 = std::chrono::high_resolution_clock::now();
-
 
   auto match_start = std::chrono::high_resolution_clock::now();
   auto match_result = match(result1, result2, image1, min_cossim, timing_stats);

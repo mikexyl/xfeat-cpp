@@ -29,7 +29,7 @@ int main(int argc, char* argv[]) {
   std::filesystem::path image_folder((argc > 1) ? argv[1] : "image");
   const std::string image_resolution = "640x480";
   constexpr int max_kpts = 500;
-  const int num_images = 4000;
+  const int num_images = 400;
 
   std::filesystem::path xfeat_model_folder = (argc > 2) ? argv[2] : "onnx_model";
   std::filesystem::path xfeat_model_path = xfeat_model_folder / ("xfeat_" + image_resolution + ".onnx");
