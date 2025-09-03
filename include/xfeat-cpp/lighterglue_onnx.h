@@ -25,8 +25,7 @@ class LighterGlueOnnx {
            const std::vector<float>& feats1,
            const std::array<float, 2>& image1_size,
            std::vector<std::array<int64_t, 2>>& matches,
-           std::vector<float>& scores,
-           int num_feat = 500);
+           std::vector<float>& scores);
 
   // Convenience: run and return matches/scores as output
   std::pair<std::vector<std::array<int64_t, 2>>, std::vector<float>> match(const std::vector<float>& mkpts0,
@@ -37,7 +36,7 @@ class LighterGlueOnnx {
                                                                            const std::array<float, 2>& image1_size) {
     std::vector<std::array<int64_t, 2>> matches;
     std::vector<float> scores;
-    run(mkpts0, feats0, image0_size, mkpts1, feats1, image1_size, matches, scores, mkpts0.size() / 2);
+    run(mkpts0, feats0, image0_size, mkpts1, feats1, image1_size, matches, scores);
     return {matches, scores};
   }
 
@@ -46,7 +45,7 @@ class LighterGlueOnnx {
                                       const std::array<float, 2>& image0_size,
                                       const DetectionResult& det1,
                                       const std::array<float, 2>& image1_size,
-                                      float min_score = 0.5) {
+                                      float min_score = -1) {
     // Assume det0.keypoints: CV_32FC2, det0.descriptors: CV_32FC1 or CV_32FC64
     std::vector<float> mkpts0, feats0, mkpts1, feats1;
     // Flatten keypoints and descriptors

@@ -561,7 +561,7 @@ DetectionResult XFeatONNX::detect_and_compute(Ort::Session& session,
     topk_kpts.push_back(cv::Point2f(mkpts_mat.at<float>(i, 0), mkpts_mat.at<float>(i, 1)));
   }
   std::vector<float> topk_scores(keypoints.size(), 1.0);
-  for (int i = 0; i < (int)idxs.size(); ++i) {
+  for (int i = 0; i < (int)idxs.size() and topk_kpts.size() < top_k; ++i) {
     topk_kpts.push_back(cv::Point2f(mkpts_mat.at<float>(idxs[i], 0), mkpts_mat.at<float>(idxs[i], 1)));
     topk_scores.push_back(scores_mat.at<float>(idxs[i], 0));
   }

@@ -3,6 +3,7 @@
 #include <onnxruntime_cxx_api.h>
 
 #include <array>
+#include <chrono>
 #include <iostream>
 #include <vector>
 
@@ -30,7 +31,18 @@ LighterGlueOnnx::LighterGlueOnnx(Ort::Env& env, const std::string& model_path, b
       throw std::runtime_error("CUDAExecutionProvider not found.");
     }
 
+    // const auto& api = Ort::GetApi();
+    // OrtTensorRTProviderOptionsV2* tensorrt_options;
+    // Ort::ThrowOnError(api.CreateTensorRTProviderOptions(&tensorrt_options));
+
+    // // Append the V2 TensorRT provider
+    // session_options_.AppendExecutionProvider_TensorRT_V2(*tensorrt_options);
+
     OrtCUDAProviderOptions cuda_options{};
+    cuda_options.device_id = 0;              // <- important
+    cuda_options.arena_extend_strategy = 0;  // optional
+    cuda_options.cudnn_conv_algo_search = OrtCudnnConvAlgoSearchExhaustive;
+    cuda_options.do_copy_in_default_stream = 1;
     session_options_.AppendExecutionProvider_CUDA(cuda_options);
   }
 
@@ -46,34 +58,44 @@ void LighterGlueOnnx::run(const std::vector<float>& mkpts0,
                           const std::vector<float>& feats1,
                           const std::array<float, 2>& image1_size,
                           std::vector<std::array<int64_t, 2>>& matches,
-                          std::vector<float>& scores,
-                          int num_feat) {
+                          std::vector<float>& scores) {
   Ort::AllocatorWithDefaultOptions allocator;
 
-  // Define tensor shapes
-  std::array<int64_t, 3> dims_kp = {1, num_feat, 2};
-  std::array<int64_t, 3> dims_feat = {1, num_feat, 64};
-  std::array<int64_t, 1> dims_size = {2};
+  // 1) Derive N from BOTH sources and validate
+  const int64_t n0_kp = static_cast<int64_t>(mkpts0.size() / 2);
+  const int64_t n0_feat = static_cast<int64_t>(feats0.size() / 64);
+  const int64_t n1_kp = static_cast<int64_t>(mkpts1.size() / 2);
+  const int64_t n1_feat = static_cast<int64_t>(feats1.size() / 64);
+
+  if (n0_kp != n0_feat) throw std::runtime_error("mkpts0 vs feats0 count mismatch");
+  if (n1_kp != n1_feat) throw std::runtime_error("mkpts1 vs feats1 count mismatch");
+
+  const int64_t n0 = n0_kp;
+  const int64_t n1 = n1_kp;
+
+  // 2) Build shapes from the validated counts
+  std::array<int64_t, 3> dims_kp0 = {1, n0, 2};
+  std::array<int64_t, 3> dims_feat0 = {1, n0, 64};
+  std::array<int64_t, 3> dims_kp1 = {1, n1, 2};
+  std::array<int64_t, 3> dims_feat1 = {1, n1, 64};
+  std::array<int64_t, 1> dims_size = {2};  // use the same for both images
 
   // Create Ort tensors for inputs
-  Ort::Value in_mkpts0 = Ort::Value::CreateTensor<float>(
-      allocator.GetInfo(), const_cast<float*>(mkpts0.data()), mkpts0.size(), dims_kp.data(), dims_kp.size());
-  Ort::Value in_feats0 = Ort::Value::CreateTensor<float>(
-      allocator.GetInfo(), const_cast<float*>(feats0.data()), feats0.size(), dims_feat.data(), dims_feat.size());
-  Ort::Value in_img0 = Ort::Value::CreateTensor<float>(allocator.GetInfo(),
-                                                       const_cast<float*>(image0_size.data()),
-                                                       image0_size.size(),
-                                                       dims_size.data(),
-                                                       dims_size.size());
-  Ort::Value in_mkpts1 = Ort::Value::CreateTensor<float>(
-      allocator.GetInfo(), const_cast<float*>(mkpts1.data()), mkpts1.size(), dims_kp.data(), dims_kp.size());
-  Ort::Value in_feats1 = Ort::Value::CreateTensor<float>(
-      allocator.GetInfo(), const_cast<float*>(feats1.data()), feats1.size(), dims_feat.data(), dims_feat.size());
-  Ort::Value in_img1 = Ort::Value::CreateTensor<float>(allocator.GetInfo(),
-                                                       const_cast<float*>(image1_size.data()),
-                                                       image1_size.size(),
-                                                       dims_size.data(),
-                                                       dims_size.size());
+  Ort::MemoryInfo mem = Ort::MemoryInfo::CreateCpu(OrtDeviceAllocator, OrtMemTypeCPU);
+
+  Ort::Value in_mkpts0 =
+      Ort::Value::CreateTensor<float>(mem, const_cast<float*>(mkpts0.data()), mkpts0.size(), dims_kp0.data(), 3);
+  Ort::Value in_feats0 =
+      Ort::Value::CreateTensor<float>(mem, const_cast<float*>(feats0.data()), feats0.size(), dims_feat0.data(), 3);
+  Ort::Value in_img0 =
+      Ort::Value::CreateTensor<float>(mem, const_cast<float*>(image0_size.data()), 2, dims_size.data(), 1);
+
+  Ort::Value in_mkpts1 =
+      Ort::Value::CreateTensor<float>(mem, const_cast<float*>(mkpts1.data()), mkpts1.size(), dims_kp1.data(), 3);
+  Ort::Value in_feats1 =
+      Ort::Value::CreateTensor<float>(mem, const_cast<float*>(feats1.data()), feats1.size(), dims_feat1.data(), 3);
+  Ort::Value in_img1 =
+      Ort::Value::CreateTensor<float>(mem, const_cast<float*>(image1_size.data()), 2, dims_size.data(), 1);
 
   // Bundle inputs
   std::vector<Ort::Value> ort_inputs;
@@ -85,13 +107,13 @@ void LighterGlueOnnx::run(const std::vector<float>& mkpts0,
   ort_inputs.emplace_back(std::move(in_feats1));
   ort_inputs.emplace_back(std::move(in_img1));
 
+  auto ro = Ort::RunOptions();
+  ro.SetRunLogSeverityLevel(0);
+  ro.SetRunLogVerbosityLevel(1);
   // Run inference
-  auto output_tensors = session_.Run(Ort::RunOptions{nullptr},
-                                     input_names_.data(),
-                                     ort_inputs.data(),
-                                     ort_inputs.size(),
-                                     output_names_.data(),
-                                     output_names_.size());
+  auto output_tensors = session_.Run(
+      ro, input_names_.data(), ort_inputs.data(), ort_inputs.size(), output_names_.data(), output_names_.size());
+
   // Extract matches
   auto& out_matches = output_tensors[0];
   int64_t* match_data = out_matches.GetTensorMutableData<int64_t>();

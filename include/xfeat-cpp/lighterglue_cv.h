@@ -74,16 +74,6 @@ class LighterGlueCV {
     std::vector<int> query_resampled_ids, train_resampled_ids;
     // check if number of keypoints EQUALS n_kpts
     if (query_det.keypoints.rows != params_.n_kpts || train_det.keypoints.rows != params_.n_kpts) {
-      // Check if we have enough keypoints in both images
-      if (query_det.keypoints.rows < params_.n_kpts) {
-        throw std::runtime_error("Query image has " + std::to_string(query_det.keypoints.rows) + " keypoints, but " +
-                                 std::to_string(params_.n_kpts) + " are required.");
-      }
-      if (train_det.keypoints.rows < params_.n_kpts) {
-        throw std::runtime_error("Train image has " + std::to_string(train_det.keypoints.rows) + " keypoints, but " +
-                                 std::to_string(params_.n_kpts) + " are required.");
-      }
-
       // if there are more keypoints than we need, take the highest scores top k points
       if (query_det.keypoints.rows > params_.n_kpts) {
         auto [resampled_kpts, resampled_scores, resampled_desc, original_ids] =

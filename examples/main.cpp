@@ -116,8 +116,7 @@ int main(int argc, char* argv[]) {
       xfeat_model_folder / ("interpolator_bicubic_" + image_resolution + ".onnx");
   std::filesystem::path interp_nearest_path =
       xfeat_model_folder / ("interpolator_nearest_" + image_resolution + ".onnx");
-  std::filesystem::path lighterglue_model_path =
-      xfeat_model_folder / ("lg_" + image_resolution + "_" + std::to_string(max_kpts) + ".onnx");
+  std::filesystem::path lighterglue_model_path = xfeat_model_folder / ("lg_" + image_resolution + "_dyn.onnx");
 
   const float min_cos = (argc > 3) ? std::stof(argv[3]) : -1.0f;
   const int matcher_type_int = (argc > 4) ? std::stoi(argv[4]) : static_cast<int>(MatcherType::BF);
@@ -131,11 +130,8 @@ int main(int argc, char* argv[]) {
     return 1;
   }
 
-  Ort::Env env(ORT_LOGGING_LEVEL_WARNING, "xfeat-shared-env");
-  auto lighterglue = std::make_unique<LighterGlueOnnx>(env, lighterglue_model_path.string(),
-                                                       true);  // Use GPU
-
-  XFeatONNX xfeat_onnx(env,
+  Ort::Env xf_env(ORT_LOGGING_LEVEL_WARNING, "xfeat-shared-env");
+  XFeatONNX xfeat_onnx(xf_env,
                        XFeatONNX::Params{.xfeat_path = xfeat_model_path.string(),
                                          .interp_bilinear_path = interp_bilinear_path.string(),
                                          .interp_bicubic_path = interp_bicubic_path.string(),
@@ -145,8 +141,13 @@ int main(int argc, char* argv[]) {
                                          .matcher_type = MatcherType::GPU_BF,
                                          .anms = 0,
                                          .nkpts_before_anms = 1000,
-                                         .keypoint_detection = 1},
-                       std::move(lighterglue));
+                                         .keypoint_detection = 0},
+                       nullptr);
+
+  std::cout << "-----------------" << std::endl;
+
+  auto lighterglue = std::make_unique<LighterGlueOnnx>(xf_env, lighterglue_model_path.string(),
+                                                       true);  // Use GPU
 
   xfeat::CuMatcher gpu_matcher;
   gpu_matcher.init(max_kpts, max_kpts, 64);
@@ -185,7 +186,8 @@ int main(int argc, char* argv[]) {
   std::vector<cv::KeyPoint> opencv_keypoints1, opencv_keypoints2;
   cv::KeyPoint::convert(opencv_corners1, opencv_keypoints1);
   opencv_keypoints1.resize(200);
-  result1 = xfeat_onnx.detect_and_compute(image1, max_kpts, &heatmap1, {}, {}, &std1, opencv_keypoints1);
+  opencv_keypoints2.resize(200);
+  result1 = xfeat_onnx.detect_and_compute(image1, max_kpts, &heatmap1, {}, {}, &std1);
   result2 = xfeat_onnx.detect_and_compute(image2, max_kpts, &heatmap2, {}, {}, &std2);
   auto end = std::chrono::high_resolution_clock::now();
   std::chrono::duration<double, std::milli> duration = end - start;
@@ -226,11 +228,26 @@ int main(int argc, char* argv[]) {
 
   float fx = 377.229, fy = 377.4866, cx = 326.3518, cy = 239.6597;
 
+  std::array<float, 2> image_size{static_cast<float>(image1.size().width), static_cast<float>(image1.size().height)};
+  auto indices = lighterglue->match(result1, image_size, result2, image_size, min_cos);
   auto t_start = std::chrono::high_resolution_clock::now();
   cv::Mat E;
   std::vector<cv::DMatch> matches;
   // matches = gpu_matcher.match_gpuRansac(result1, result2, 0.4f, 512, fx, fy, cx, cy, &E);
-  matches = gpu_matcher.match(result1, result2, 0.9, H, 100, 0, image1.size());
+  // matches = gpu_matcher.match(result1, result2, 0.9, H, 100, 0, image1.size());
+  indices = lighterglue->match(result1, image_size, result2, image_size, min_cos);
+  // populate matches
+  for (int i = 0; i < indices.size(); ++i) {
+    if (indices[i].size()) {
+      cv::DMatch m;
+      m.queryIdx = i;
+      m.trainIdx = indices[i][0];
+      m.distance = 1.0f - min_cos;  // dummy value
+      matches.push_back(m);
+    }
+  }
+  std::cout << "found " << matches.size() << " matches" << std::endl;
+
   auto t_end = std::chrono::high_resolution_clock::now();
   match_timing_stats["gpu_match_mkpts_gpuRansac"] = std::chrono::duration<double, std::milli>(t_end - t_start).count();
 
