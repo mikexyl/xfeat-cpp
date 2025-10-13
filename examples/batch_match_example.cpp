@@ -92,7 +92,9 @@ int main(int argc, char* argv[]) {
     std::cout << "x_prep size: " << x_prep.size << ", type: " << x_prep.type() << std::endl;
     cv::Mat dense_desc = head_netvlad_onnx.run(M1, x_prep);
     auto t2 = std::chrono::high_resolution_clock::now();
+    std::cout << "Dense descriptor size: " << dense_desc.size << std::endl;
     auto result = netvlad_onnx.infer(dense_desc);
+    std::cout << "VLAD descriptor size: " << result.size() << " x " << result[0].size() << std::endl;
     auto end = std::chrono::high_resolution_clock::now();
     std::cout << "detect_and_compute: " << std::chrono::duration<double, std::milli>(t1 - start).count() << " ms\n";
     std::cout << "head_netvlad_onnx.run: " << std::chrono::duration<double, std::milli>(t2 - t1).count() << " ms\n";
@@ -124,6 +126,8 @@ int main(int argc, char* argv[]) {
     return 1;
   }
   auto vlad_query = extract_netvlad_desc(query_img);
+  // print the size of vlad_query
+  std::cout << "VLAD query descriptor size: " << vlad_query.size() << " x " << vlad_query[0].size() << std::endl;
 
   // --- Get the image 10 frames before the query image (if possible) ---
   float vlad_threshold = 0.0f;

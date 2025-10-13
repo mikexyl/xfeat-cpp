@@ -96,7 +96,8 @@ class LighterGlueCV {
 
     std::array<float, 2> size0 = {static_cast<float>(image0_size.width), static_cast<float>(image0_size.height)};
     std::array<float, 2> size1 = {static_cast<float>(image1_size.width), static_cast<float>(image1_size.height)};
-    auto indexes = matcher_.match(query_det, size0, train_det, size1, min_score_);
+    std::vector<float> scores;
+    auto indexes = matcher_.match(query_det, size0, train_det, size1, min_score_, &scores);
     matches.clear();
     for (size_t i = 0; i < indexes.size(); ++i) {
       if (indexes[i].empty()) continue;  // No matches for this keypoint
@@ -104,8 +105,9 @@ class LighterGlueCV {
       // Map back to original indices if resampling was performed
       int query_idx = query_resampled_ids.empty() ? static_cast<int>(i) : query_resampled_ids[i];
       int train_idx = train_resampled_ids.empty() ? indexes[i][0] : train_resampled_ids[indexes[i][0]];
+      float score = scores.empty() ? 0.f : scores[i];
 
-      matches.emplace_back(cv::DMatch(query_idx, train_idx, 0));  // Use first match only
+      matches.emplace_back(cv::DMatch(query_idx, train_idx, 0, score));  // Use first match only
     }
   }
 

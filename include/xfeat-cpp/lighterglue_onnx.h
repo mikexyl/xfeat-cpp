@@ -45,7 +45,9 @@ class LighterGlueOnnx {
                                       const std::array<float, 2>& image0_size,
                                       const DetectionResult& det1,
                                       const std::array<float, 2>& image1_size,
-                                      float min_score = -1) {
+                                      float min_score = -1,
+                                      std::vector<float>* scores_out = nullptr) {
+    if (scores_out) scores_out->clear();
     // Assume det0.keypoints: CV_32FC2, det0.descriptors: CV_32FC1 or CV_32FC64
     std::vector<float> mkpts0, feats0, mkpts1, feats1;
     // Flatten keypoints and descriptors
@@ -62,6 +64,9 @@ class LighterGlueOnnx {
       int idx1 = static_cast<int>(matches[i][1]);
       if (idx0 >= 0 && idx0 < det0.keypoints.rows && idx1 >= 0 && idx1 < det1.keypoints.rows) {
         idx[idx0].push_back(idx1);
+        if (scores_out) {
+          scores_out->push_back(scores[i]);
+        }
       } else {
         std::cerr << "Warning: match index out of bounds: " << idx0 << ", " << idx1 << std::endl;
       }
