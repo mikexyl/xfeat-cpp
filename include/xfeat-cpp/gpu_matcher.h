@@ -3,11 +3,12 @@
 #include <cublas_v2.h>
 
 #include <iostream>
-#include <opencv2/core.hpp>
-#include <opencv4/opencv2/core/types.hpp>
 #include <vector>
 
-#include "gms_matcher.h"
+// Include OpenCV headers after CUDA headers to avoid namespace conflicts
+#include <opencv2/core.hpp>
+#include <opencv4/opencv2/core/types.hpp>
+
 #include "xfeat-cpp/helpers.h"
 #include "xfeat-cpp/types.h"
 
@@ -121,23 +122,7 @@ class CuMatcher {
         }
       }
     } else if (filtering == 2) {
-      std::vector<cv::KeyPoint> kpts1, kpts2;
-
-      cv::KeyPoint::convert(keypoints1, kpts1);
-      cv::KeyPoint::convert(keypoints2, kpts2);
-
-      // use GMS
-      gms_matcher gms(kpts1, img_size, kpts2, img_size, matches);
-      std::vector<bool> inlier_mask;
-      gms.GetInlierMask(inlier_mask, true, true);
-      // Apply inlier mask to matches
-      std::vector<cv::DMatch> filtered_matches;
-      for (size_t i = 0; i < matches.size(); ++i) {
-        if (inlier_mask[i]) {
-          filtered_matches.push_back(matches[i]);
-        }
-      }
-      matches = filtered_matches;
+      throw "gms removed";
     }
 
     return matches;

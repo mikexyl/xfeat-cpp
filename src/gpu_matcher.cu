@@ -29,10 +29,12 @@
 #include <cmath>
 #include <cstdio>
 #include <iostream>
-#include <opencv2/core.hpp>
-#include <opencv2/opencv.hpp>
 #include <random>
 #include <vector>
+
+// Include OpenCV headers after CUDA headers to avoid namespace conflicts
+#include <opencv2/core.hpp>
+#include <opencv2/opencv.hpp>
 
 #include "xfeat-cpp/gpu_matcher.h"
 

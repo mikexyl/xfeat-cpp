@@ -10,7 +10,6 @@
 #include "xfeat-cpp/xfeat_netvlad_onnx.h"
 
 using namespace xfeat;
-using namespace cv;
 
 // Helper to get test image path
 std::string getTestImagePath(const std::string& name) { return std::string("/workspaces/src/xfeat-cpp/image/") + name; }

@@ -57,7 +57,7 @@ target_link_libraries(${PROJECT_NAME}
     ${onnxruntime_LIBRARY}
     TBB::tbb
     TBB::tbbmalloc
-    faiss_gpu faiss
+    faiss
     gpu_matcher
     OpenMP::OpenMP_CXX
 )
