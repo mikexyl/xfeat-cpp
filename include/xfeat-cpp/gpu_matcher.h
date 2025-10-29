@@ -138,54 +138,6 @@ class CuMatcher {
                                                                    float min_cossim = 0.f,
                                                                    std::vector<float>* scores = nullptr);
 
-  struct GpuMatchResult {
-    std::vector<std::pair<int, int>> matches;  // same as before
-    cv::Mat H;                                 // 3x3 (CV_32F)
-  };
-
-  std::vector<cv::DMatch> match_gpuRansac(DetectionResult& result1,
-                                          DetectionResult& result2,
-                                          float min_sim,
-                                          int ransac_seed,
-                                          float fx,
-                                          float fy,
-                                          float cx,
-                                          float cy,
-                                          cv::Mat* E = nullptr) {
-    std::vector<cv::Point2f> keypoints1, keypoints2;
-    for (int i = 0; i < result1.keypoints.rows; ++i) {
-      keypoints1.emplace_back(result1.keypoints.at<float>(i, 0), result1.keypoints.at<float>(i, 1));
-    }
-    for (int i = 0; i < result2.keypoints.rows; ++i) {
-      keypoints2.emplace_back(result2.keypoints.at<float>(i, 0), result2.keypoints.at<float>(i, 1));
-    }
-
-    auto indices = this->match_mkpts_gpuRansac_E(
-        result1.descriptors, result2.descriptors, keypoints1, keypoints2, min_sim, 3.5, ransac_seed, fx, fy, cx, cy);
-    if (E) {
-      *E = indices.E;  // copy the essential matrix if provided
-    }
-    std::cout << "Number of matches: " << indices.matches.size() << std::endl;
-
-    std::vector<cv::DMatch> matches;
-    for (const auto& match : indices.matches) {
-      matches.emplace_back(match.first, match.second, 0.0f);
-    }
-    return matches;
-  }
-
-  EResult match_mkpts_gpuRansac_E(const cv::Mat& desc1,
-                                  const cv::Mat& desc2,
-                                  const std::vector<cv::Point2f>& kpts1_px,  // undistorted (pixels)
-                                  const std::vector<cv::Point2f>& kpts2_px,  // undistorted (pixels)
-                                  float min_cossim,
-                                  float sampson_thr_px,
-                                  int ransac_seed,
-                                  float fx,
-                                  float fy,
-                                  float cx,
-                                  float cy);
-
  private:
   float *d_scores = nullptr, *d_A = nullptr, *d_B = nullptr;
   float2 *d_pred = nullptr, *d_kp2 = nullptr;
