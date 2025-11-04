@@ -22,7 +22,7 @@ add_library(gpu_matcher
     src/gpu_matcher.cu
 )
 
-target_compile_features(gpu_matcher PUBLIC cxx_std_17)
+#target_compile_features(gpu_matcher PUBLIC cxx_std_20)
 target_link_libraries(gpu_matcher
     PRIVATE
         ${OpenCV_LIBS}
@@ -57,7 +57,7 @@ target_link_libraries(${PROJECT_NAME}
     ${onnxruntime_LIBRARY}
     TBB::tbb
     TBB::tbbmalloc
-    faiss
+    faiss 
     gpu_matcher
     OpenMP::OpenMP_CXX
 )

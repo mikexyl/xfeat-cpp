@@ -2,6 +2,7 @@
 
 #include <faiss/Index.h>
 #include <faiss/IndexFlat.h>
+#include <faiss/IndexIDMap.h>
 #include <faiss/IndexIVF.h>
 #include <faiss/gpu/GpuCloner.h>
 #include <faiss/gpu/StandardGpuResources.h>
@@ -49,13 +50,31 @@ class FaissDatabase {
   }
 
   // Add descriptors to the index
-  void add(const cv::Mat& descriptors) {
+  faiss::idx_t add(const cv::Mat& descriptors) { return add_with_id(index_->ntotal, descriptors); }
+
+  faiss::idx_t add_with_id(size_t id, const cv::Mat& descriptors) {
     CV_Assert(not descriptors.empty());
-    if (descriptors.empty()) return;
+    if (descriptors.empty()) return -1;
     if (descriptors.type() != CV_32F) {
       throw std::runtime_error("Descriptors must be of type CV_32F");
     }
+    if (id_to_index_map_.find(id) != id_to_index_map_.end()) {
+      throw std::runtime_error("Descriptor with the same id already exists in the index");
+    }
+    faiss::idx_t faiss_id = index_->ntotal;
+    id_to_index_map_.emplace(id, faiss_id);
     index_->add(1, (float*)descriptors.data);
+    return faiss_id;
+  }
+
+  cv::Mat get(size_t id) const {
+    if (id_to_index_map_.count(id) == 0) {
+      return cv::Mat();  // Return an empty Mat if id not found
+    }
+    faiss::idx_t faiss_id = id_to_index_map_.at(id);
+    cv::Mat descriptor(1, index_->d, CV_32F);
+    index_->reconstruct(faiss_id, descriptor.ptr<float>());
+    return descriptor;
   }
 
   // Search for k nearest neighbors
@@ -102,6 +121,7 @@ class FaissDatabase {
  private:
   std::unique_ptr<faiss::Index> index_;
   std::unique_ptr<faiss::gpu::StandardGpuResources> res_;
+  std::unordered_map<size_t, faiss::idx_t> id_to_index_map_;
 };
 
 }  // namespace xfeat

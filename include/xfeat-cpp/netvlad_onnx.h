@@ -9,8 +9,11 @@
 namespace xfeat {
 class NetVLADONNX {
  public:
-  NetVLADONNX(Ort::Env& env, const std::string& model_path, bool use_gpu = true);
-  // input: [batch_size, 256, 30, 40], output: [batch_size, output_dim]
+  // height and width correspond to the spatial dimensions in the model input
+  // Default values kept for backward compatibility (30 x 40)
+  NetVLADONNX(Ort::Env& env, const std::string& model_path, bool use_gpu = true,
+              size_t height = 30, size_t width = 40);
+  // input: [batch_size, 256, height, width], output: [batch_size, output_dim]
   std::vector<std::vector<float>> infer(const std::vector<float>& input, size_t batch_size);
   // Optional: OpenCV Mat interface
   std::vector<std::vector<float>> infer(const cv::Mat& input);
@@ -18,6 +21,10 @@ class NetVLADONNX {
  private:
   Ort::SessionOptions session_options_;
   Ort::Session session_;
-  size_t input_size_ = 256 * 30 * 40;
+  // spatial dimensions expected by the model
+  size_t height_ = 30;
+  size_t width_ = 40;
+  // total input size (channels * height * width)
+  size_t input_size_ = 256 * height_ * width_;
 };
 }  // namespace xfeat

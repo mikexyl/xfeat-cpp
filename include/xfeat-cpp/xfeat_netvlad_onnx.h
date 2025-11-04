@@ -28,11 +28,15 @@ class HeadNetVLADONNX {
 
 class XfeatNetVLADONNX {
  public:
+  // height and width correspond to the spatial dims expected by NetVLAD
   XfeatNetVLADONNX(Ort::Env& env,
                    const std::string& head_model_path,
                    const std::string& netvlad_model_path,
-                   bool use_gpu = true)
-      : head_(env, head_model_path, use_gpu), netvlad_(env, netvlad_model_path, use_gpu) {}
+                   bool use_gpu = true,
+                   size_t height = 30,
+                   size_t width = 40)
+      : head_(env, head_model_path, use_gpu),
+        netvlad_(env, netvlad_model_path, use_gpu, height, width) {}
 
   void warmup() {
     // Warm up both head and netvlad models

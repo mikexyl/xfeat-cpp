@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <cmath>
 #include <iostream>
 #include <opencv2/calib3d.hpp>

@@ -5,8 +5,8 @@
 #include <stdexcept>
 
 namespace xfeat {
-NetVLADONNX::NetVLADONNX(Ort::Env& env, const std::string& model_path, bool use_gpu)
-    : session_options_(), session_(nullptr) {
+NetVLADONNX::NetVLADONNX(Ort::Env& env, const std::string& model_path, bool use_gpu, size_t height, size_t width)
+    : session_options_(), session_(nullptr), height_(height), width_(width), input_size_(256 * height * width) {
   if (use_gpu) {
     OrtCUDAProviderOptions cuda_options{};
     session_options_.AppendExecutionProvider_CUDA(cuda_options);
@@ -15,7 +15,8 @@ NetVLADONNX::NetVLADONNX(Ort::Env& env, const std::string& model_path, bool use_
 }
 
 std::vector<std::vector<float>> NetVLADONNX::infer(const std::vector<float>& input, size_t batch_size) {
-  std::vector<int64_t> input_shape = {static_cast<int64_t>(batch_size), 256, 30, 40};
+  std::vector<int64_t> input_shape = {
+      static_cast<int64_t>(batch_size), 256, static_cast<int64_t>(height_), static_cast<int64_t>(width_)};
   Ort::AllocatorWithDefaultOptions allocator;
   // Use GetInputNameAllocated and GetOutputNameAllocated
   auto input_name_alloc = session_.GetInputNameAllocated(0, allocator);
@@ -41,9 +42,16 @@ std::vector<std::vector<float>> NetVLADONNX::infer(const std::vector<float>& inp
 }
 
 std::vector<std::vector<float>> NetVLADONNX::infer(const cv::Mat& input) {
-  // Expect input to be CV_32F, shape: [batch_size, 256, 30, 40]
-  if (input.type() != CV_32F || input.dims != 4 || input.size[1] != 256 || input.size[2] != 30 || input.size[3] != 40) {
-    throw std::invalid_argument("Input must be CV_32F with shape [batch_size,256,30,40]");
+  // Expect input to be CV_32F, shape: [batch_size, 256, height, width]
+  if (input.type() != CV_32F || input.dims != 4 || input.size[1] != 256 || input.size[2] != static_cast<int>(height_) ||
+      input.size[3] != static_cast<int>(width_)) {
+    std::string input_shape = std::string("Input shape: [") + std::to_string(input.size[0]) + ", " +
+                              std::to_string(input.size[1]) + ", " + std::to_string(input.size[2]) + ", " +
+                              std::to_string(input.size[3]) + "]";
+    std::string required_shape = std::string("Required shape: [batch_size, 256, ") + std::to_string(height_) + ", " +
+                                 std::to_string(width_) + "]";
+    std::string msg = input_shape + "; " + required_shape;
+    throw std::invalid_argument(std::string("Input must be CV_32F with shape [batch_size,256,height,width]: ") + msg);
   }
   size_t batch_size = input.size[0];
   std::vector<float> input_vec(input.begin<float>(), input.end<float>());
