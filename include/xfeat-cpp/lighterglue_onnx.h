@@ -52,9 +52,13 @@ class LighterGlueOnnx {
     std::vector<float> mkpts0, feats0, mkpts1, feats1;
     // Flatten keypoints and descriptors
     mkpts0.assign((float*)det0.keypoints.datastart, (float*)det0.keypoints.dataend);
-    feats0.assign((float*)det0.descriptors.datastart, (float*)det0.descriptors.dataend);
     mkpts1.assign((float*)det1.keypoints.datastart, (float*)det1.keypoints.dataend);
-    feats1.assign((float*)det1.descriptors.datastart, (float*)det1.descriptors.dataend);
+
+    cv::Mat desc0_continuous = det0.descriptors.isContinuous() ? det0.descriptors : det0.descriptors.clone();
+    cv::Mat desc1_continuous = det1.descriptors.isContinuous() ? det1.descriptors : det1.descriptors.clone();
+
+    feats0.assign((float*)desc0_continuous.datastart, (float*)desc0_continuous.dataend);
+    feats1.assign((float*)desc1_continuous.datastart, (float*)desc1_continuous.dataend);
 
     auto [matches, scores] = match(mkpts0, feats0, image0_size, mkpts1, feats1, image1_size);
     std::vector<std::vector<int>> idx(det0.keypoints.rows, std::vector<int>{});

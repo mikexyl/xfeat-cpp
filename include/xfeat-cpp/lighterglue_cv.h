@@ -19,6 +19,7 @@ class LighterGlueCV {
     bool use_gpu = true;
     float min_score = -1.f;
     int n_kpts = 500;  // Default number of keypoints to detect
+    cv::Size image_size = cv::Size(640, 480);  // Default image size
   };
 
   explicit LighterGlueCV(Ort::Env& env, const Params& params)
@@ -41,10 +42,17 @@ class LighterGlueCV {
     DetectionResult dummy_det0{random_kpts0, {}, random_desc0};
     DetectionResult dummy_det1{random_kpts1, {}, random_desc1};
     std::vector<cv::DMatch> dummy_matches;
-    match(dummy_det0, cv::Size(640, 480), dummy_det1, cv::Size(640, 480), dummy_matches);
+    match(dummy_det0, dummy_det1, dummy_matches);
   }
 
-  // OpenCV-style: match keypoints and descriptors from two images
+  // OpenCV-style: match keypoints and descriptors from two images (uses default image size from params)
+  void match(DetectionResult& query_det,
+             DetectionResult& train_det,
+             std::vector<cv::DMatch>& matches) /* not const */ {
+    match(query_det, params_.image_size, train_det, params_.image_size, matches);
+  }
+
+  // OpenCV-style: match keypoints and descriptors from two images (with explicit image sizes)
   void match(DetectionResult& query_det,
              const cv::Size& image0_size,
              DetectionResult& train_det,

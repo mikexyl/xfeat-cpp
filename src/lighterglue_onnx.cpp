@@ -13,7 +13,9 @@ LighterGlueOnnx::LighterGlueOnnx(Ort::Env& env, const std::string& model_path, b
     : session_options_(), session_(nullptr), input_names_(), output_names_() {
   std::cout << "Loading LighterGlue ONNX model from: " << model_path << std::endl;
   session_options_.SetIntraOpNumThreads(1);
-  session_options_.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_EXTENDED);
+  session_options_.SetInterOpNumThreads(1);
+  session_options_.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_BASIC);
+  session_options_.SetExecutionMode(ExecutionMode::ORT_SEQUENTIAL);
   if (use_gpu) {
     std::cout << "Attempting to use GPU for ONNX Runtime." << std::endl;
 
@@ -39,10 +41,11 @@ LighterGlueOnnx::LighterGlueOnnx(Ort::Env& env, const std::string& model_path, b
     // session_options_.AppendExecutionProvider_TensorRT_V2(*tensorrt_options);
 
     OrtCUDAProviderOptions cuda_options{};
-    cuda_options.device_id = 0;              // <- important
-    cuda_options.arena_extend_strategy = 0;  // optional
-    cuda_options.cudnn_conv_algo_search = OrtCudnnConvAlgoSearchExhaustive;
-    cuda_options.do_copy_in_default_stream = 1;
+    cuda_options.device_id = 0;
+    cuda_options.arena_extend_strategy = 1;  // kSameAsRequested - don't preallocate
+    cuda_options.gpu_mem_limit = SIZE_MAX;
+    cuda_options.cudnn_conv_algo_search = OrtCudnnConvAlgoSearchDefault;
+    cuda_options.do_copy_in_default_stream = 0;  // Use separate streams
     session_options_.AppendExecutionProvider_CUDA(cuda_options);
   }
 
@@ -67,8 +70,14 @@ void LighterGlueOnnx::run(const std::vector<float>& mkpts0,
   const int64_t n1_kp = static_cast<int64_t>(mkpts1.size() / 2);
   const int64_t n1_feat = static_cast<int64_t>(feats1.size() / 64);
 
-  if (n0_kp != n0_feat) throw std::runtime_error("mkpts0 vs feats0 count mismatch");
-  if (n1_kp != n1_feat) throw std::runtime_error("mkpts1 vs feats1 count mismatch");
+  if (n0_kp != n0_feat) {
+    std::string msg = "mkpts0 vs feats0 count mismatch: " + std::to_string(n0_kp) + " vs " + std::to_string(n0_feat);
+    throw std::runtime_error(msg);
+  }
+  if (n1_kp != n1_feat) {
+    std::string msg = "mkpts1 vs feats1 count mismatch: " + std::to_string(n1_kp) + " vs " + std::to_string(n1_feat);
+    throw std::runtime_error(msg);
+  }
 
   const int64_t n0 = n0_kp;
   const int64_t n1 = n1_kp;

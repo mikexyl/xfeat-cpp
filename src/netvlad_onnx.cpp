@@ -7,8 +7,17 @@
 namespace xfeat {
 NetVLADONNX::NetVLADONNX(Ort::Env& env, const std::string& model_path, bool use_gpu, size_t height, size_t width)
     : session_options_(), session_(nullptr), height_(height), width_(width), input_size_(256 * height * width) {
+  session_options_.SetIntraOpNumThreads(1);
+  session_options_.SetInterOpNumThreads(1);
+  session_options_.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_BASIC);
+  session_options_.SetExecutionMode(ExecutionMode::ORT_SEQUENTIAL);
   if (use_gpu) {
     OrtCUDAProviderOptions cuda_options{};
+    cuda_options.device_id = 0;
+    cuda_options.arena_extend_strategy = 1;  // kSameAsRequested - don't preallocate
+    cuda_options.gpu_mem_limit = SIZE_MAX;
+    cuda_options.cudnn_conv_algo_search = OrtCudnnConvAlgoSearchDefault;
+    cuda_options.do_copy_in_default_stream = 0;  // Use separate streams
     session_options_.AppendExecutionProvider_CUDA(cuda_options);
   }
   session_ = Ort::Session(env, model_path.c_str(), session_options_);

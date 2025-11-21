@@ -80,7 +80,9 @@ XFeatONNX::XFeatONNX(Ort::Env& env,
       keypoint_detection_(keypoint_detection),
       lighterglue_(std::move(lighterglue)) {
   session_options_.SetIntraOpNumThreads(1);
-  session_options_.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_EXTENDED);
+  session_options_.SetInterOpNumThreads(1);
+  session_options_.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_BASIC);
+  session_options_.SetExecutionMode(ExecutionMode::ORT_SEQUENTIAL);
   if (use_gpu) {
     std::cout << "Attempting to use GPU for ONNX Runtime." << std::endl;
 
@@ -111,6 +113,11 @@ XFeatONNX::XFeatONNX(Ort::Env& env,
     // session_options_.AppendExecutionProvider_TensorRT_V2(*tensorrt_options);
 
     OrtCUDAProviderOptions cuda_options{};
+    cuda_options.device_id = 0;
+    cuda_options.arena_extend_strategy = 1;  // kSameAsRequested - don't preallocate
+    cuda_options.gpu_mem_limit = SIZE_MAX;
+    cuda_options.cudnn_conv_algo_search = OrtCudnnConvAlgoSearchDefault;
+    cuda_options.do_copy_in_default_stream = 0;  // Use separate streams
     session_options_.AppendExecutionProvider_CUDA(cuda_options);
   }
 

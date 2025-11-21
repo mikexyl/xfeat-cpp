@@ -13,6 +13,8 @@
 #include <memory>
 #include <opencv2/core.hpp>
 #include <string>
+#include <unordered_map>
+#include <vector>
 
 namespace xfeat {
 
@@ -26,24 +28,42 @@ class FaissDatabase {
     kIVFFlat = 1,
   };
 
-  // Load a FAISS index from file, use GPU if available
-  explicit FaissDatabase(IndexMode mode = IndexMode::kFlat, const std::string& index_path = {}) {
+  // Load a FAISS index from file. Optionally use GPU (default: true)
+  explicit FaissDatabase(IndexMode mode = IndexMode::kFlat,
+                         const std::string& index_path = {},
+                         bool use_gpu = true,
+                         int dim = 0)
+      : use_gpu_(use_gpu) {
     if (mode == IndexMode::kIVFFlat) {
+      // Always read the index on CPU first
       std::unique_ptr<faiss::Index> cpu_index(faiss::read_index(index_path.c_str()));
       if (!cpu_index) {
         throw std::runtime_error("Failed to load FAISS index from " + index_path);
       }
-      res_ = std::make_unique<faiss::gpu::StandardGpuResources>();
-      faiss::gpu::GpuClonerOptions opts;
-      opts.useFloat16 = false;
-      index_.reset(faiss::gpu::index_cpu_to_gpu(res_.get(), 0, cpu_index.get(), &opts));
+      if (use_gpu_) {
+        // Move to GPU
+        res_ = std::make_unique<faiss::gpu::StandardGpuResources>();
+        res_->setTempMemory(0);
+        faiss::gpu::GpuClonerOptions opts;
+        opts.useFloat16 = true;
+        index_.reset(faiss::gpu::index_cpu_to_gpu(res_.get(), 0, cpu_index.get(), &opts));
+      } else {
+        // Keep on CPU
+        index_ = std::move(cpu_index);
+      }
     } else if (mode == IndexMode::kFlat) {
       // Create a flat index
-      res_ = std::make_unique<faiss::gpu::StandardGpuResources>();
-      faiss::IndexFlatL2* flat_index = new faiss::IndexFlatL2(0);  // 0 dimension for now
-      faiss::gpu::GpuClonerOptions opts;
-      opts.useFloat16 = false;
-      index_.reset(faiss::gpu::index_cpu_to_gpu(res_.get(), 0, flat_index, &opts));
+      if (use_gpu_) {
+        res_ = std::make_unique<faiss::gpu::StandardGpuResources>();
+        res_->setTempMemory(0);
+        faiss::IndexFlatL2* flat_index = new faiss::IndexFlatL2(dim);  // Use the specified dimension
+        faiss::gpu::GpuClonerOptions opts;
+        opts.useFloat16 = true;
+        index_.reset(faiss::gpu::index_cpu_to_gpu(res_.get(), 0, flat_index, &opts));
+      } else {
+        faiss::IndexFlatL2* flat_index = new faiss::IndexFlatL2(dim);  // Use the specified dimension
+        index_.reset(flat_index);
+      }
     } else {
       throw std::invalid_argument("Unsupported IndexMode");
     }
@@ -101,14 +121,25 @@ class FaissDatabase {
     CV_Assert(query.rows == 1);
     CV_Assert(query.cols == index_->d);  // query must match index dimension
 
-    index_->search(1, query.ptr<float>(), k, distances.data(), indices.data(), &search_params);
+    if (not use_gpu_) {
+      // GPU variant: pass the search parameters (used by IVF)
+      index_->search(1, query.ptr<float>(), k, distances.data(), indices.data(), &search_params);
+    } else {
+      // CPU variant: call the CPU overload (SearchParameters pointer isn't supported on CPU base)
+      index_->search(1, query.ptr<float>(), k, distances.data(), indices.data());
+    }
   }
 
   // Save the index to file
   void save(const std::string& path) const {
-    // Move index back to CPU for saving
-    std::unique_ptr<faiss::Index> cpu_index(faiss::gpu::index_gpu_to_cpu(index_.get()));
-    faiss::write_index(cpu_index.get(), path.c_str());
+    if (use_gpu_) {
+      // Move index back to CPU for saving
+      std::unique_ptr<faiss::Index> cpu_index(faiss::gpu::index_gpu_to_cpu(index_.get()));
+      faiss::write_index(cpu_index.get(), path.c_str());
+    } else {
+      // Index is already on CPU
+      faiss::write_index(index_.get(), path.c_str());
+    }
   }
 
   // Get the dimension of the index
@@ -118,9 +149,12 @@ class FaissDatabase {
     return faiss::fvec_L2sqr(a.ptr<float>(), b.ptr<float>(), a.cols);
   }
 
+  auto nTotal() const { return index_ ? index_->ntotal : 0; }
+
  private:
   std::unique_ptr<faiss::Index> index_;
   std::unique_ptr<faiss::gpu::StandardGpuResources> res_;
+  bool use_gpu_ = true;
   std::unordered_map<size_t, faiss::idx_t> id_to_index_map_;
 };
 
