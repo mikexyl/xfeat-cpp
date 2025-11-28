@@ -18,7 +18,7 @@ class LighterGlueCV {
     std::string model_path;
     bool use_gpu = true;
     float min_score = -1.f;
-    int n_kpts = 500;  // Default number of keypoints to detect
+    int n_kpts = 500;                          // Default number of keypoints to detect
     cv::Size image_size = cv::Size(640, 480);  // Default image size
   };
 
@@ -46,9 +46,7 @@ class LighterGlueCV {
   }
 
   // OpenCV-style: match keypoints and descriptors from two images (uses default image size from params)
-  void match(DetectionResult& query_det,
-             DetectionResult& train_det,
-             std::vector<cv::DMatch>& matches) /* not const */ {
+  void match(DetectionResult& query_det, DetectionResult& train_det, std::vector<cv::DMatch>& matches) /* not const */ {
     match(query_det, params_.image_size, train_det, params_.image_size, matches);
   }
 
@@ -79,22 +77,37 @@ class LighterGlueCV {
         train_det.keypoints.rows != train_det.descriptors.rows) {
       throw std::runtime_error("Keypoints and descriptors row count mismatch.");
     }
+
+    // CRITICAL: Enforce maximum keypoint limit to prevent GPU OOM
+    // LighterGlue has O(n²) memory complexity, so too many keypoints = crash
+    // Reduced to 256 to leave more GPU memory for vilib feature tracking
+    const int MAX_SAFE_KPTS = 1024;  // Hard limit to prevent OOM
+    const int target_kpts = std::min(params_.n_kpts, MAX_SAFE_KPTS);
+
+    if (query_det.keypoints.rows > MAX_SAFE_KPTS || train_det.keypoints.rows > MAX_SAFE_KPTS) {
+      std::cerr << "WARNING: Too many keypoints detected (" << query_det.keypoints.rows << ", "
+                << train_det.keypoints.rows << "). Limiting to " << MAX_SAFE_KPTS << " to prevent GPU OOM."
+                << std::endl;
+    }
+
     std::vector<int> query_resampled_ids, train_resampled_ids;
-    // check if number of keypoints EQUALS n_kpts
-    if (query_det.keypoints.rows != params_.n_kpts || train_det.keypoints.rows != params_.n_kpts) {
-      // if there are more keypoints than we need, take the highest scores top k points
-      if (query_det.keypoints.rows > params_.n_kpts) {
+    // Always resample to ensure consistent size (ONNX works better with fixed sizes)
+    if (query_det.keypoints.rows != target_kpts) {
+      if (query_det.keypoints.rows > target_kpts) {
         auto [resampled_kpts, resampled_scores, resampled_desc, original_ids] =
-            resampleTopK(query_det.keypoints, query_det.scores, query_det.descriptors, params_.n_kpts);
+            resampleTopK(query_det.keypoints, query_det.scores, query_det.descriptors, target_kpts);
         query_det.keypoints = resampled_kpts;
         query_det.scores = resampled_scores;
         query_det.descriptors = resampled_desc;
         query_resampled_ids = original_ids;
       }
+      // Note: If fewer keypoints than target, we keep them as-is (padding not implemented)
+    }
 
-      if (train_det.keypoints.rows > params_.n_kpts) {
+    if (train_det.keypoints.rows != target_kpts) {
+      if (train_det.keypoints.rows > target_kpts) {
         auto [resampled_kpts, resampled_scores, resampled_desc, original_ids] =
-            resampleTopK(train_det.keypoints, train_det.scores, train_det.descriptors, params_.n_kpts);
+            resampleTopK(train_det.keypoints, train_det.scores, train_det.descriptors, target_kpts);
         train_det.keypoints = resampled_kpts;
         train_det.scores = resampled_scores;
         train_det.descriptors = resampled_desc;
@@ -113,7 +126,7 @@ class LighterGlueCV {
       // Map back to original indices if resampling was performed
       int query_idx = query_resampled_ids.empty() ? static_cast<int>(i) : query_resampled_ids[i];
       int train_idx = train_resampled_ids.empty() ? indexes[i][0] : train_resampled_ids[indexes[i][0]];
-      float score = scores.empty() ? 0.f : scores[i];
+      float score = (i < scores.size()) ? scores[i] : 0.f;
 
       matches.emplace_back(cv::DMatch(query_idx, train_idx, 0, score));  // Use first match only
     }

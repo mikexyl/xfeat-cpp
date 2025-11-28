@@ -1,5 +1,6 @@
 #include "xfeat-cpp/xfeat_onnx.h"
 
+#include <cuda_runtime.h>
 #include <tbb/blocked_range.h>
 #include <tbb/mutex.h>
 #include <tbb/parallel_for.h>
@@ -114,10 +115,10 @@ XFeatONNX::XFeatONNX(Ort::Env& env,
 
     OrtCUDAProviderOptions cuda_options{};
     cuda_options.device_id = 0;
-    cuda_options.arena_extend_strategy = 1;  // kSameAsRequested - don't preallocate
-    cuda_options.gpu_mem_limit = SIZE_MAX;
+    cuda_options.arena_extend_strategy = 0;  // kNextPowerOfTwo - preallocate to avoid fragmentation
+    cuda_options.gpu_mem_limit = 1ULL * 1024 * 1024 * 1024;  // Limit to 1GB per instance
     cuda_options.cudnn_conv_algo_search = OrtCudnnConvAlgoSearchDefault;
-    cuda_options.do_copy_in_default_stream = 0;  // Use separate streams
+    cuda_options.do_copy_in_default_stream = 1;  // Use default stream for multi-process safety
     session_options_.AppendExecutionProvider_CUDA(cuda_options);
   }
 
@@ -355,6 +356,15 @@ DetectionResult XFeatONNX::detect_and_compute(Ort::Session& session,
                                               int keypoint_detection,
                                               const std::vector<cv::KeyPoint>& keypoints,
                                               cv::Mat mask) {
+  // Synchronize CUDA before running ONNX inference
+  // Critical when vilib and xfeat run in parallel in same process
+  cudaError_t sync_err = cudaDeviceSynchronize();
+  if (sync_err != cudaSuccess) {
+    std::cerr << "CUDA synchronization error before XFeat: " 
+              << cudaGetErrorString(sync_err) << " (error " << sync_err << ")" << std::endl;
+    cudaGetLastError();  // Clear error state
+  }
+  
   // if image is in gray scale, convert to BGR
   cv::Mat color_image, gray_image;
   if (image.channels() == 1) {
