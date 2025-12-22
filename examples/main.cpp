@@ -138,11 +138,9 @@ int main(int argc, char* argv[]) {
                                          .interp_nearest_path = interp_nearest_path.string(),
                                          .use_gpu = true,
                                          .nkpts = max_kpts,
-                                         .matcher_type = MatcherType::GPU_BF,
                                          .anms = 0,
                                          .nkpts_before_anms = 1000,
-                                         .keypoint_detection = 0},
-                       nullptr);
+                                         .keypoint_detection = 0});
 
   std::cout << "-----------------" << std::endl;
 

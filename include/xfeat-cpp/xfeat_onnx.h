@@ -23,14 +23,13 @@ class XFeatONNX {
     std::string interp_bicubic_path;
     std::string interp_nearest_path;
     bool use_gpu = false;
-    int nkpts = 4096;                               // Default number of keypoints
-    MatcherType matcher_type = MatcherType::FLANN;  // Default to BFMatcher
-    int anms = 0;                                   // Default no anms
-    int nkpts_before_anms = 0;                      // Default no keypoints before ANMS
-    int keypoint_detection = 0;                     // Default xfeat keypoint detection
+    int nkpts = 4096;            // Default number of keypoints
+    int anms = 0;                // Default no anms
+    int nkpts_before_anms = 0;   // Default no keypoints before ANMS
+    int keypoint_detection = 0;  // Default xfeat keypoint detection
   };
 
-  XFeatONNX(Ort::Env& env, const Params& params, std::unique_ptr<LighterGlueOnnx> lighterglue = nullptr);
+  XFeatONNX(Ort::Env& env, const Params& params);
   XFeatONNX(Ort::Env& env,
             const std::string& xfeat_path,
             const std::string& interp_bilinear_path,
@@ -38,11 +37,9 @@ class XFeatONNX {
             const std::string& interp_nearest_path,
             bool use_gpu,
             int nkpts,
-            MatcherType matcher_type,
             int anms,
             int nkpts_before_anms,
-            int keypoint_detection,
-            std::unique_ptr<LighterGlueOnnx> lighterglue = nullptr);
+            int keypoint_detection);
 
   std::vector<cv::DMatch> match(cv::Mat image1,
                                 cv::Mat image2,
@@ -80,9 +77,6 @@ class XFeatONNX {
  public:
   int input_width_;
   int input_height_;
-  const MatcherType matcher_type_;
-  std::unique_ptr<LighterGlueOnnx> lighterglue_;
-  std::unique_ptr<CuMatcher> gpu_matcher_;
 
  private:
   std::string interp_input_name1_;
@@ -109,13 +103,5 @@ class XFeatONNX {
                                      int keypoint_detection = 0,
                                      const std::vector<cv::KeyPoint>& keypoints = {},
                                      cv::Mat mask = {});
-
-  std::vector<std::vector<int>> match_mkpts_bf(const cv::Mat& feats1, const cv::Mat& feats2, float min_cossim = 0.82f);
-
-  std::vector<std::vector<int>> match_mkpts_flann(const cv::Mat& feats1,
-                                                  const cv::Mat& feats2,
-                                                  float min_cossim = 0.82f);
-
-  std::vector<std::vector<int>> match_mkpts_lg(const cv::Mat& feats1, const cv::Mat& feats2, float min_cossim = 0.82f);
 };
 }  // namespace xfeat

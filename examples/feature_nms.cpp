@@ -39,9 +39,7 @@ int main(int argc, char** argv) {
                            .interp_nearest_path = interp_nearest_path.string(),
                            .use_gpu = true,
                            .nkpts = max_kpts,
-                           .matcher_type = MatcherType::GPU_BF,
-                       },
-                       nullptr);
+                       });
 
   xfeat_onnx.detect_and_compute(image, max_kpts, nullptr, {}, {}, nullptr);
 
