@@ -4,6 +4,3 @@
 [submodule "thirdparty/libsgm"]
 	path = thirdparty/libsgm
 	url = https://github.com/fixstars/libSGM.git
-[submodule "thirdparty/lightstereo"]
-	path = thirdparty/lightstereo
-	url = git@github.com:XiandaGuo/OpenStereo.git
