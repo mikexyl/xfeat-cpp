@@ -1,3 +1,6 @@
 [submodule "thirdparty/gms"]
 	path = thirdparty/gms
 	url = git@github.com:JiawangBian/GMS-Feature-Matcher.git
+[submodule "thirdparty/libsgm"]
+	path = thirdparty/libsgm
+	url = https://github.com/fixstars/libSGM.git

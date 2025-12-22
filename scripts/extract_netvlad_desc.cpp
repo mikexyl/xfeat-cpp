@@ -69,9 +69,7 @@ int main(int argc, char* argv[]) {
                            .interp_bicubic_path = interp_bicubic_path.string(),
                            .interp_nearest_path = interp_nearest_path.string(),
                            .use_gpu = true,
-                           .matcher_type = MatcherType::LIGHTERGLUE,
-                       },
-                       std::move(lighterglue_model));
+                       });
   xfeat::NetVLADONNX netvlad_onnx(env, netvlad_model_path.string());
   xfeat::HeadNetVLADONNX head_netvlad_onnx(env, (xfeat_model_folder / ("xfeat_nv.onnx")).string());
 

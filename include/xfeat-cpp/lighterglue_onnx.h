@@ -2,8 +2,10 @@
 
 #include <onnxruntime_cxx_api.h>
 
+#include <algorithm>
 #include <array>
 #include <iostream>
+#include <limits>
 #include <string>
 #include <utility>
 #include <vector>
@@ -47,18 +49,35 @@ class LighterGlueOnnx {
                                       const std::array<float, 2>& image1_size,
                                       float min_score = -1,
                                       std::vector<float>* scores_out = nullptr) {
-    if (scores_out) scores_out->clear();
+    if (scores_out) {
+      scores_out->assign(det0.keypoints.rows, std::numeric_limits<float>::lowest());
+    }
+    
+    // Validate inputs
+    if (det0.keypoints.empty() || det1.keypoints.empty()) {
+      std::cerr << "Error: Empty keypoints in LighterGlueOnnx::match" << std::endl;
+      return std::vector<std::vector<int>>(det0.keypoints.rows, std::vector<int>{});
+    }
+    if (det0.descriptors.empty() || det1.descriptors.empty()) {
+      std::cerr << "Error: Empty descriptors in LighterGlueOnnx::match" << std::endl;
+      return std::vector<std::vector<int>>(det0.keypoints.rows, std::vector<int>{});
+    }
+    
     // Assume det0.keypoints: CV_32FC2, det0.descriptors: CV_32FC1 or CV_32FC64
     std::vector<float> mkpts0, feats0, mkpts1, feats1;
-    // Flatten keypoints and descriptors
-    mkpts0.assign((float*)det0.keypoints.datastart, (float*)det0.keypoints.dataend);
-    mkpts1.assign((float*)det1.keypoints.datastart, (float*)det1.keypoints.dataend);
+    
+    // Ensure continuous memory and flatten keypoints
+    cv::Mat kpts0_continuous = det0.keypoints.isContinuous() ? det0.keypoints : det0.keypoints.clone();
+    cv::Mat kpts1_continuous = det1.keypoints.isContinuous() ? det1.keypoints : det1.keypoints.clone();
+    
+    mkpts0.assign((float*)kpts0_continuous.data, (float*)kpts0_continuous.data + kpts0_continuous.total() * kpts0_continuous.channels());
+    mkpts1.assign((float*)kpts1_continuous.data, (float*)kpts1_continuous.data + kpts1_continuous.total() * kpts1_continuous.channels());
 
     cv::Mat desc0_continuous = det0.descriptors.isContinuous() ? det0.descriptors : det0.descriptors.clone();
     cv::Mat desc1_continuous = det1.descriptors.isContinuous() ? det1.descriptors : det1.descriptors.clone();
 
-    feats0.assign((float*)desc0_continuous.datastart, (float*)desc0_continuous.dataend);
-    feats1.assign((float*)desc1_continuous.datastart, (float*)desc1_continuous.dataend);
+    feats0.assign((float*)desc0_continuous.data, (float*)desc0_continuous.data + desc0_continuous.total() * desc0_continuous.channels());
+    feats1.assign((float*)desc1_continuous.data, (float*)desc1_continuous.data + desc1_continuous.total() * desc1_continuous.channels());
 
     auto [matches, scores] = match(mkpts0, feats0, image0_size, mkpts1, feats1, image1_size);
     std::vector<std::vector<int>> idx(det0.keypoints.rows, std::vector<int>{});
@@ -69,7 +88,7 @@ class LighterGlueOnnx {
       if (idx0 >= 0 && idx0 < det0.keypoints.rows && idx1 >= 0 && idx1 < det1.keypoints.rows) {
         idx[idx0].push_back(idx1);
         if (scores_out) {
-          scores_out->push_back(scores[i]);
+          (*scores_out)[idx0] = std::max((*scores_out)[idx0], scores[i]);
         }
       } else {
         std::cerr << "Warning: match index out of bounds: " << idx0 << ", " << idx1 << std::endl;

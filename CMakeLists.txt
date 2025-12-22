@@ -80,9 +80,41 @@ add_subdirectory(scripts)
 add_subdirectory(tests)
 add_subdirectory(examples)
 
+# set ENABLE_SAMPLES for libsgm
+set(ENABLE_SAMPLES ON CACHE BOOL "Build samples" FORCE)
+
+# Patch libsgm CMakeLists.txt for proper export support
+set(LIBSGM_CMAKE_FILE "${CMAKE_SOURCE_DIR}/thirdparty/libsgm/src/CMakeLists.txt")
+file(READ "${LIBSGM_CMAKE_FILE}" LIBSGM_CMAKE_CONTENT)
+
+# Check if patch is needed
+string(FIND "${LIBSGM_CMAKE_CONTENT}" "INTERFACE_INCLUDE_DIRECTORIES \${LIBSGM_INCLUDE_DIR}" NEEDS_PATCH)
+if(NOT NEEDS_PATCH EQUAL -1)
+    message(STATUS "Patching libsgm for proper export support")
+    
+    # Replace the problematic include directories setup
+    string(REPLACE 
+        "target_include_directories(\${PROJECT_NAME} PRIVATE \${LIBSGM_INCLUDE_DIR} $<$<BOOL:\${BUILD_OPENCV_WRAPPER}>:\${OpenCV_INCLUDE_DIRS}>)"
+        "target_include_directories(\${PROJECT_NAME}\n    PUBLIC\n        $<BUILD_INTERFACE:\${LIBSGM_INCLUDE_DIR}>\n        $<INSTALL_INTERFACE:include>\n    PRIVATE\n        $<$<BOOL:\${BUILD_OPENCV_WRAPPER}>:\${OpenCV_INCLUDE_DIRS}>)"
+        LIBSGM_CMAKE_CONTENT "${LIBSGM_CMAKE_CONTENT}")
+    
+    # Remove the problematic set_target_properties line
+    string(REPLACE 
+        "set_target_properties(\${PROJECT_NAME} PROPERTIES INTERFACE_INCLUDE_DIRECTORIES \${LIBSGM_INCLUDE_DIR})\n\n"
+        ""
+        LIBSGM_CMAKE_CONTENT "${LIBSGM_CMAKE_CONTENT}")
+    
+    file(WRITE "${LIBSGM_CMAKE_FILE}" "${LIBSGM_CMAKE_CONTENT}")
+endif()
+
+add_subdirectory(thirdparty/libsgm)
+
+# Set POSITION_INDEPENDENT_CODE for libsgm after it's added
+set_target_properties(sgm PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
 include(CMakePackageConfigHelpers)
 
-install(TARGETS ${PROJECT_NAME}
+install(TARGETS ${PROJECT_NAME} sgm
     EXPORT xfeat-cppTargets
     ARCHIVE DESTINATION lib
     LIBRARY DESTINATION lib
@@ -96,6 +128,7 @@ install(EXPORT xfeat-cppTargets
 )
 
 install(DIRECTORY include/ DESTINATION include)
+install(DIRECTORY thirdparty/libsgm/include/ DESTINATION include)
 
 configure_package_config_file(
     "${CMAKE_CURRENT_SOURCE_DIR}/cmake/xfeat-cppConfig.cmake.in"

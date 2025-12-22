@@ -1,6 +1,9 @@
 #include "xfeat-cpp/netvlad_onnx.h"
 
+#include <cuda_runtime.h>
+
 #include <algorithm>
+#include <iostream>
 #include <memory>
 #include <stdexcept>
 
@@ -14,16 +17,23 @@ NetVLADONNX::NetVLADONNX(Ort::Env& env, const std::string& model_path, bool use_
   if (use_gpu) {
     OrtCUDAProviderOptions cuda_options{};
     cuda_options.device_id = 0;
-    cuda_options.arena_extend_strategy = 1;  // kSameAsRequested - don't preallocate
-    cuda_options.gpu_mem_limit = SIZE_MAX;
+    cuda_options.arena_extend_strategy = 0;  // kNextPowerOfTwo - preallocate to avoid fragmentation
+    cuda_options.gpu_mem_limit = 1ULL * 1024 * 1024 * 1024;  // Limit to 1GB per instance
     cuda_options.cudnn_conv_algo_search = OrtCudnnConvAlgoSearchDefault;
-    cuda_options.do_copy_in_default_stream = 0;  // Use separate streams
+    cuda_options.do_copy_in_default_stream = 1;  // Use default stream for multi-process safety
     session_options_.AppendExecutionProvider_CUDA(cuda_options);
   }
   session_ = Ort::Session(env, model_path.c_str(), session_options_);
 }
 
 std::vector<std::vector<float>> NetVLADONNX::infer(const std::vector<float>& input, size_t batch_size) {
+  // Synchronize CUDA before ONNX inference
+  cudaError_t sync_err = cudaDeviceSynchronize();
+  if (sync_err != cudaSuccess) {
+    std::cerr << "CUDA sync error before NetVLAD: " << cudaGetErrorString(sync_err) << std::endl;
+    cudaGetLastError();
+  }
+  
   std::vector<int64_t> input_shape = {
       static_cast<int64_t>(batch_size), 256, static_cast<int64_t>(height_), static_cast<int64_t>(width_)};
   Ort::AllocatorWithDefaultOptions allocator;

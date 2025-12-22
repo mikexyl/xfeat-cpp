@@ -1,5 +1,6 @@
 #include "xfeat-cpp/lighterglue_onnx.h"
 
+#include <cuda_runtime.h>
 #include <onnxruntime_cxx_api.h>
 
 #include <array>
@@ -42,10 +43,10 @@ LighterGlueOnnx::LighterGlueOnnx(Ort::Env& env, const std::string& model_path, b
 
     OrtCUDAProviderOptions cuda_options{};
     cuda_options.device_id = 0;
-    cuda_options.arena_extend_strategy = 1;  // kSameAsRequested - don't preallocate
-    cuda_options.gpu_mem_limit = SIZE_MAX;
+    cuda_options.arena_extend_strategy = 0;  // kNextPowerOfTwo - preallocate to avoid fragmentation
+    cuda_options.gpu_mem_limit = 1ULL * 1024 * 1024 * 1024;  // Limit to 1GB per instance to leave room for vilib
     cuda_options.cudnn_conv_algo_search = OrtCudnnConvAlgoSearchDefault;
-    cuda_options.do_copy_in_default_stream = 0;  // Use separate streams
+    cuda_options.do_copy_in_default_stream = 1;  // Use default stream for multi-process safety
     session_options_.AppendExecutionProvider_CUDA(cuda_options);
   }
 
@@ -62,6 +63,23 @@ void LighterGlueOnnx::run(const std::vector<float>& mkpts0,
                           const std::array<float, 2>& image1_size,
                           std::vector<std::array<int64_t, 2>>& matches,
                           std::vector<float>& scores) {
+  // Clear any pre-existing CUDA errors from other libraries (vilib, libsgm)
+  cudaError_t prev_err = cudaGetLastError();
+  if (prev_err != cudaSuccess) {
+    std::cerr << "WARNING: Pre-existing CUDA error before LighterGlue: " 
+              << cudaGetErrorString(prev_err) << " (error " << prev_err << ")" << std::endl;
+    std::cerr << "Attempting to continue after clearing error state..." << std::endl;
+  }
+  
+  // Now synchronize to ensure all previous operations complete
+  cudaError_t sync_err = cudaDeviceSynchronize();
+  if (sync_err != cudaSuccess) {
+    std::cerr << "ERROR: CUDA sync failed before LighterGlue: " 
+              << cudaGetErrorString(sync_err) << " (error " << sync_err << ")" << std::endl;
+    cudaGetLastError();  // Clear it again
+    // Don't throw - try to continue
+  }
+  
   Ort::AllocatorWithDefaultOptions allocator;
 
   // 1) Derive N from BOTH sources and validate
