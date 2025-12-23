@@ -80,6 +80,8 @@ add_subdirectory(scripts)
 add_subdirectory(tests)
 add_subdirectory(examples)
 
+add_subdirectory(thirdparty/lightstereo/deploy/cpp)
+
 # set ENABLE_SAMPLES for libsgm
 set(ENABLE_SAMPLES ON CACHE BOOL "Build samples" FORCE)
 
