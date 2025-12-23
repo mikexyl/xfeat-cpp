@@ -147,9 +147,6 @@ int main(int argc, char* argv[]) {
   auto lighterglue = std::make_unique<LighterGlueOnnx>(xf_env, lighterglue_model_path.string(),
                                                        true);  // Use GPU
 
-  xfeat::CuMatcher gpu_matcher;
-  gpu_matcher.init(max_kpts, max_kpts, 64);
-
   // warm up the model
   DetectionResult result1, result2;
   try {
