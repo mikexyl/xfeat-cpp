@@ -4,6 +4,7 @@ if(POLICY CMP0167)
 endif()
 
 find_package(Boost REQUIRED COMPONENTS program_options)
+find_package(PCL REQUIRED COMPONENTS common io visualization filters)
 
 add_executable(xfeat_example main.cpp)
 target_link_libraries(xfeat_example 
@@ -38,4 +39,6 @@ target_link_libraries(stereo_depth_example
     PRIVATE
     ${PROJECT_NAME}
     Boost::program_options
+    ${PCL_LIBRARIES}
 )
+target_include_directories(stereo_depth_example PRIVATE ${PCL_INCLUDE_DIRS})

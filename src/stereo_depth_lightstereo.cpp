@@ -260,28 +260,32 @@ LightStereoDepth::TransformPipeline::TransformPipeline(const cv::Size& target_si
 }
 
 cv::Mat LightStereoDepth::TransformPipeline::padImage(const cv::Mat& image) {
-  int pad_h = std::max(0, target_size_.height - image.rows);
-  int pad_w = std::max(0, target_size_.width - image.cols);
+  // int pad_h = std::max(0, target_size_.height - image.rows);
+  // int pad_w = std::max(0, target_size_.width - image.cols);
 
-  cv::Mat padded;
-  cv::copyMakeBorder(image, padded, pad_h, 0, 0, pad_w, cv::BORDER_CONSTANT, cv::Scalar(0, 0, 0));
-  return padded;
+  // cv::Mat padded;
+  // cv::copyMakeBorder(image, padded, pad_h, 0, 0, pad_w, cv::BORDER_REPLICATE);
+  // return padded;
+
+  int h = std::min(image.rows, target_size_.height);
+  int w = std::min(image.cols, target_size_.width);
+
+  int target_height = target_size_.height;
+  int target_width = target_size_.width;
+
+  int pad_top = target_height - h;
+  int pad_bottom = 0;
+  int pad_left = 0;
+  int pad_right = target_width - w;
+
+  cv::Mat padded_image;
+  cv::copyMakeBorder(image, padded_image, pad_top, pad_bottom, pad_left, pad_right, cv::BORDER_REPLICATE, cv::Scalar());
+  return padded_image;
 }
 
 cv::Mat LightStereoDepth::TransformPipeline::normalizeImage(const cv::Mat& image) {
-  cv::Mat normalized;
-  image.convertTo(normalized, CV_32FC3, 1.0 / 255.0);
-
-  // Apply normalization: (x - mean) / std
-  std::vector<cv::Mat> channels(3);
-  cv::split(normalized, channels);
-
-  for (int i = 0; i < 3; ++i) {
-    channels[i] = (channels[i] - mean_[i]) / std_[i];
-  }
-
-  cv::merge(channels, normalized);
-  return normalized;
+  cv::Mat out = ((image / 255.0) - mean_) / std_;
+  return out;
 }
 
 cv::Mat LightStereoDepth::TransformPipeline::transposeImage(const cv::Mat& image) {
@@ -310,15 +314,14 @@ std::map<std::string, cv::Mat> LightStereoDepth::TransformPipeline::operator()(c
   cv::Mat left_padded = padImage(left_rgb);
   cv::Mat right_padded = padImage(right_rgb);
 
-  cv::Mat left_normalized = normalizeImage(left_padded);
-  cv::Mat right_normalized = normalizeImage(right_padded);
+  cv::Mat left_transposed = transposeImage(left_padded);
+  cv::Mat right_transposed = transposeImage(right_padded);
 
-  cv::Mat left_transposed = transposeImage(left_normalized);
-  cv::Mat right_transposed = transposeImage(right_normalized);
+  cv::Mat left_normalized = normalizeImage(left_transposed);
+  cv::Mat right_normalized = normalizeImage(right_transposed);
 
-  sample["left_img"] = left_transposed;
-  sample["right_img"] = right_transposed;
-
+  sample["left_img"] = left_normalized;
+  sample["right_img"] = right_normalized;
   return sample;
 }
 
@@ -348,13 +351,17 @@ void LightStereoDepth::compute(const cv::Mat& left, const cv::Mat& right, cv::Ma
   // Store original size for post-processing
   original_size_ = left.size();
 
-  // Resize images if needed
+  // Resize images to fit within target_size while keeping aspect ratio
   cv::Mat left_resized, right_resized;
   bool needs_resize = (left.size() != params_.target_size);
 
   if (needs_resize) {
-    cv::resize(left, left_resized, params_.target_size, 0, 0, cv::INTER_LINEAR);
-    cv::resize(right, right_resized, params_.target_size, 0, 0, cv::INTER_LINEAR);
+    double scale = std::min(static_cast<double>(params_.target_size.width) / left.cols,
+                            static_cast<double>(params_.target_size.height) / left.rows);
+    int new_width = static_cast<int>(left.cols * scale);
+    int new_height = static_cast<int>(left.rows * scale);
+    cv::resize(left, left_resized, cv::Size(new_width, new_height), 0, 0, cv::INTER_LINEAR);
+    cv::resize(right, right_resized, cv::Size(new_width, new_height), 0, 0, cv::INTER_LINEAR);
   } else {
     left_resized = left;
     right_resized = right;
@@ -370,34 +377,46 @@ void LightStereoDepth::compute(const cv::Mat& left, const cv::Mat& right, cv::Ma
   // Run inference
   auto output = engine_->run(sample);
 
-  // Extract results
-  raw_disparity_ = output["disp_pred"];
-  color_disparity_ = output["color_normalized_disp_pred"];
-
-  // Postprocess - crop padding if needed
-  cv::Mat disparity_cropped;
-  if (raw_disparity_.size() != params_.target_size) {
+  // Extract and crop results
+  cv::Mat raw_disparity = output["disp_pred"];
+  cv::Mat raw_disparity_cropped;
+  cv::Size output_expected_size = left_resized.size();
+  if (raw_disparity.size() != output_expected_size) {
     cv::Rect roi(
-        0, raw_disparity_.rows - params_.target_size.height, params_.target_size.width, params_.target_size.height);
-    disparity_cropped = raw_disparity_(roi);
+        0, raw_disparity.rows - output_expected_size.height, output_expected_size.width, output_expected_size.height);
+    raw_disparity_cropped = raw_disparity(roi);
   } else {
-    disparity_cropped = raw_disparity_;
+    raw_disparity_cropped = raw_disparity;
   }
 
   // Scale disparity back to original size if needed
+  cv::Mat final_disparity;
   if (needs_resize) {
     cv::Mat disparity_resized;
-    cv::resize(disparity_cropped, disparity_resized, original_size_, 0, 0, cv::INTER_LINEAR);
-    static constexpr float kMaxDisparityRatio = 0.05f;
+    cv::resize(raw_disparity_cropped, disparity_resized, original_size_, 0, 0, cv::INTER_LINEAR);
+    static constexpr float kMaxDisparityRatio = 0.1f;
     float max_disparity = kMaxDisparityRatio * params_.target_size.width;
 
     // Scale disparity values by the horizontal scaling factor
-    disparity = disparity_resized * scale_x / 16;
-    disparity.setTo(-1.0f, disparity_resized > max_disparity);
+    final_disparity = disparity_resized * scale_x;  /// 16;
+    final_disparity.setTo(-1.0f, disparity_resized > (max_disparity * scale_x));
+    disparity = final_disparity;
   } else {
     throw "should be resized";
-    disparity = disparity_cropped.clone();
+    final_disparity = raw_disparity_cropped.clone();
+    disparity = final_disparity;
   }
+
+  // Generate color disparity after all processing
+  double minVal, maxVal;
+  cv::minMaxLoc(final_disparity, &minVal, &maxVal);
+  minVal = std::max(minVal, 0.0);
+  cv::Mat normalized_disp_pred, color_normalized_disp_pred;
+  final_disparity.convertTo(
+      normalized_disp_pred, CV_8UC1, 255.0 / (maxVal - minVal), -minVal * 255.0 / (maxVal - minVal));
+  cv::applyColorMap(normalized_disp_pred, color_normalized_disp_pred, cv::COLORMAP_JET);
+  raw_disparity_ = final_disparity;
+  color_disparity_ = color_normalized_disp_pred;
 }
 
 void LightStereoDepth::warmup(const cv::Size& image_size) {
