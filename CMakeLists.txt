@@ -76,11 +76,6 @@ set(XFEAT_LINK_LIBS
     OpenMP::OpenMP_CXX
 )
 
-if(TENSORRT_AVAILABLE)
-    list(APPEND XFEAT_LINK_LIBS TensorRT::nvinfer)
-    target_compile_definitions(${PROJECT_NAME} PUBLIC HAVE_TENSORRT)
-endif()
-
 # Add BUILD_OPENCV_WRAPPER definition for stereo_depth_libsgm.cpp
 target_compile_definitions(${PROJECT_NAME} PRIVATE BUILD_OPENCV_WRAPPER)
 
@@ -88,6 +83,12 @@ target_link_libraries(${PROJECT_NAME}
     PUBLIC
     ${XFEAT_LINK_LIBS}
 )
+
+# Link TensorRT privately if available (not part of public interface)
+if(TENSORRT_AVAILABLE)
+    target_link_libraries(${PROJECT_NAME} PRIVATE TensorRT::nvinfer)
+    target_compile_definitions(${PROJECT_NAME} PUBLIC HAVE_TENSORRT)
+endif()
 
 add_subdirectory(include/xfeat-cpp/nms/anms)
 
