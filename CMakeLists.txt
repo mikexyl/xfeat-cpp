@@ -14,53 +14,81 @@ find_package(faiss REQUIRED)
 find_package(CUDAToolkit REQUIRED)
 find_package(OpenMP REQUIRED)
 
+# Try to find TensorRT (optional for LightStereo)
+find_library(TENSORRT_LIBRARY nvinfer
+    PATHS /usr/local/lib /usr/lib
+          /usr/local/TensorRT/lib /usr/local/tensorrt/lib
+          /opt/TensorRT/lib /opt/tensorrt/lib
+)
+
+if(TENSORRT_LIBRARY)
+    message(STATUS "Found TensorRT: ${TENSORRT_LIBRARY}")
+    # Verify we can actually use it by trying to find the target
+    if(TARGET CUDA::nvinfer)
+        set(TENSORRT_AVAILABLE TRUE)
+    else()
+        # Create imported target for TensorRT
+        add_library(TensorRT::nvinfer UNKNOWN IMPORTED)
+        set_target_properties(TensorRT::nvinfer PROPERTIES
+            IMPORTED_LOCATION "${TENSORRT_LIBRARY}"
+        )
+        set(TENSORRT_AVAILABLE TRUE)
+    endif()
+    set(STEREO_DEPTH_SOURCES
+        src/stereo_depth.cpp
+        src/stereo_depth_libsgm.cpp
+        src/stereo_depth_lightstereo.cpp
+    )
+else()
+    message(STATUS "TensorRT not found - LightStereo depth will not be available")
+    set(TENSORRT_AVAILABLE FALSE)
+    set(STEREO_DEPTH_SOURCES
+        src/stereo_depth.cpp
+        src/stereo_depth_libsgm.cpp
+    )
+endif()
+
 set(CMAKE_CUDA_ARCHITECTURES 89)
 
 enable_language(CUDA)
-# ------------- target
-add_library(gpu_matcher
-    src/gpu_matcher.cu
-)
 
-#target_compile_features(gpu_matcher PUBLIC cxx_std_20)
-target_link_libraries(gpu_matcher
-    PRIVATE
-        ${OpenCV_LIBS}
-    CUDA::cudart
-    CUDA::cublas
-    CUDA::cusolver
-    CUDA::curand
-    OpenMP::OpenMP_CXX
-)
-target_include_directories(gpu_matcher
-    PRIVATE
-        ${OpenCV_INCLUDE_DIRS}
-        include
-)
-
-target_compile_options(gpu_matcher PUBLIC $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda>)
-
-set_target_properties(gpu_matcher PROPERTIES POSITION_INDEPENDENT_CODE ON)
-
+# ------------- Main library target
 add_library(${PROJECT_NAME} STATIC
     src/xfeat_onnx.cpp
     src/lighterglue_onnx.cpp
     src/xfeat_cv.cpp
     src/xfeat_netvlad_onnx.cpp
-    src/netvlad_onnx.cpp)
+    src/netvlad_onnx.cpp
+    ${STEREO_DEPTH_SOURCES}
+)
 
 set_target_properties(${PROJECT_NAME} PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
-target_link_libraries(${PROJECT_NAME}
-    PUBLIC
+# Set up link libraries based on TensorRT availability
+set(XFEAT_LINK_LIBS
     ${OpenCV_LIBS}
     ${onnxruntime_LIBRARY}
     TBB::tbb
     TBB::tbbmalloc
-    faiss 
-    gpu_matcher
+    faiss
+    sgm
+    CUDA::cudart
     OpenMP::OpenMP_CXX
 )
+
+# Add BUILD_OPENCV_WRAPPER definition for stereo_depth_libsgm.cpp
+target_compile_definitions(${PROJECT_NAME} PRIVATE BUILD_OPENCV_WRAPPER)
+
+target_link_libraries(${PROJECT_NAME}
+    PUBLIC
+    ${XFEAT_LINK_LIBS}
+)
+
+# Link TensorRT privately if available (not part of public interface)
+if(TENSORRT_AVAILABLE)
+    target_link_libraries(${PROJECT_NAME} PRIVATE TensorRT::nvinfer)
+    target_compile_definitions(${PROJECT_NAME} PUBLIC HAVE_TENSORRT)
+endif()
 
 add_subdirectory(include/xfeat-cpp/nms/anms)
 
@@ -78,10 +106,14 @@ target_include_directories(${PROJECT_NAME}
 
 add_subdirectory(scripts)
 add_subdirectory(tests)
-add_subdirectory(examples)
+
+add_subdirectory(thirdparty/lightstereo/deploy/cpp)
 
 # set ENABLE_SAMPLES for libsgm
 set(ENABLE_SAMPLES ON CACHE BOOL "Build samples" FORCE)
+
+# Enable OpenCV wrapper for libsgm BEFORE adding the subdirectory
+set(BUILD_OPENCV_WRAPPER ON CACHE BOOL "Make library compatible with cv::Mat and cv::cuda::GpuMat of OpenCV" FORCE)
 
 # Patch libsgm CMakeLists.txt for proper export support
 set(LIBSGM_CMAKE_FILE "${CMAKE_SOURCE_DIR}/thirdparty/libsgm/src/CMakeLists.txt")
@@ -111,6 +143,8 @@ add_subdirectory(thirdparty/libsgm)
 
 # Set POSITION_INDEPENDENT_CODE for libsgm after it's added
 set_target_properties(sgm PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
+add_subdirectory(examples)
 
 include(CMakePackageConfigHelpers)
 
@@ -148,11 +182,3 @@ install(FILES
 )
 
 include(CMakePackageConfigHelpers)
-
-# Install and export gpu_matcher target
-install(TARGETS gpu_matcher
-    EXPORT xfeat-cppTargets
-    ARCHIVE DESTINATION lib
-    LIBRARY DESTINATION lib
-    RUNTIME DESTINATION bin
-)

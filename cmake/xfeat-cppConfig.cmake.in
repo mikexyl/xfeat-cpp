@@ -13,7 +13,26 @@ find_package(OpenMP REQUIRED)
 
 find_package(faiss REQUIRED)
 
+# TensorRT is optional - only try to find it if it was available during build
+set(TENSORRT_AVAILABLE @TENSORRT_AVAILABLE@)
+if(TENSORRT_AVAILABLE)
+    # Try to find TensorRT, but don't fail if not found (it's optional)
+    find_library(TENSORRT_LIBRARY nvinfer
+        PATHS /usr/local/lib /usr/lib
+              /usr/local/TensorRT/lib /usr/local/tensorrt/lib
+              /opt/TensorRT/lib /opt/tensorrt/lib
+    )
+    
+    if(TENSORRT_LIBRARY AND NOT TARGET TensorRT::nvinfer)
+        add_library(TensorRT::nvinfer UNKNOWN IMPORTED)
+        set_target_properties(TensorRT::nvinfer PROPERTIES
+            IMPORTED_LOCATION "${TENSORRT_LIBRARY}"
+        )
+        message(STATUS "Found TensorRT for xfeat-cpp: ${TENSORRT_LIBRARY}")
+    endif()
+endif()
+
 include("${CMAKE_CURRENT_LIST_DIR}/xfeat-cppTargets.cmake")
 
 set(xfeat-cpp_INCLUDE_DIRS "@PACKAGE_INCLUDE_INSTALL_DIR@" "${CMAKE_CURRENT_LIST_DIR}/../include" ${onnxruntime_INCLUDE_DIR})
-set(xfeat-cpp_LIBRARIES xfeat-cpp::xfeat-cpp xfeat-cpp::sgm xfeat-cpp::gpu_matcher)
+set(xfeat-cpp_LIBRARIES xfeat-cpp::xfeat-cpp xfeat-cpp::sgm)

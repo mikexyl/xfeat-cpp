@@ -6,7 +6,6 @@
 #include <opencv2/core/mat.hpp>
 #include <string>
 
-#include "xfeat-cpp/gpu_matcher.h"
 #include "xfeat-cpp/lighterglue_onnx.h"
 #include "xfeat-cpp/nms/anms/anms.h"
 #include "xfeat-cpp/types.h"
