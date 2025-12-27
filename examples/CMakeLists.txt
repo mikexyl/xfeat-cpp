@@ -42,3 +42,13 @@ target_link_libraries(stereo_depth_example
     ${PCL_LIBRARIES}
 )
 target_include_directories(stereo_depth_example PRIVATE ${PCL_INCLUDE_DIRS})
+
+add_executable(onnx_stereo_depth_example onnx_stereo_depth_example.cpp)
+target_link_libraries(onnx_stereo_depth_example
+    PRIVATE
+    ${PROJECT_NAME}
+    ${PCL_LIBRARIES}
+)
+target_include_directories(onnx_stereo_depth_example PRIVATE ${PCL_INCLUDE_DIRS})
+
+install(TARGETS onnx_stereo_depth_example DESTINATION bin)

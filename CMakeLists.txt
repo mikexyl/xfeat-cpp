@@ -38,6 +38,7 @@ if(TENSORRT_LIBRARY)
         src/stereo_depth.cpp
         src/stereo_depth_libsgm.cpp
         src/stereo_depth_lightstereo.cpp
+        src/stereo_depth_onnx.cpp
     )
 else()
     message(STATUS "TensorRT not found - LightStereo depth will not be available")
@@ -45,6 +46,7 @@ else()
     set(STEREO_DEPTH_SOURCES
         src/stereo_depth.cpp
         src/stereo_depth_libsgm.cpp
+        src/stereo_depth_onnx.cpp
     )
 endif()
 
