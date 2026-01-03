@@ -34,6 +34,7 @@ class LibSGMStereoDepth : public StereoDepth {
     int lr_max_diff;             // Max diff for LR consistency check (-1 to disable)
     int census_type;  // Census type
     bool use_gpu;             // Use GPU acceleration if available
+    cv::Size target_size;     // Resize input images to this size (empty = no resize)
     
     // Constructor with defaults
     Params();

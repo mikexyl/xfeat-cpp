@@ -61,6 +61,7 @@ add_library(${PROJECT_NAME} STATIC
     src/xfeat_cv.cpp
     src/xfeat_netvlad_onnx.cpp
     src/netvlad_onnx.cpp
+    src/jist_onnx.cpp
     ${STEREO_DEPTH_SOURCES}
 )
 

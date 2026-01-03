@@ -52,16 +52,16 @@ class FaissDatabase {
         index_ = std::move(cpu_index);
       }
     } else if (mode == IndexMode::kFlat) {
-      // Create a flat index
+      // Create a flat index with inner product (cosine similarity for normalized vectors)
       if (use_gpu_) {
         res_ = std::make_unique<faiss::gpu::StandardGpuResources>();
         res_->setTempMemory(0);
-        faiss::IndexFlatL2* flat_index = new faiss::IndexFlatL2(dim);  // Use the specified dimension
+        faiss::IndexFlatIP* flat_index = new faiss::IndexFlatIP(dim);  // Inner product for cosine similarity
         faiss::gpu::GpuClonerOptions opts;
         opts.useFloat16 = true;
         index_.reset(faiss::gpu::index_cpu_to_gpu(res_.get(), 0, flat_index, &opts));
       } else {
-        faiss::IndexFlatL2* flat_index = new faiss::IndexFlatL2(dim);  // Use the specified dimension
+        faiss::IndexFlatIP* flat_index = new faiss::IndexFlatIP(dim);  // Inner product for cosine similarity
         index_.reset(flat_index);
       }
     } else {
@@ -119,7 +119,10 @@ class FaissDatabase {
     CV_Assert(query.channels() == 1);
     CV_Assert(query.type() == CV_32F);
     CV_Assert(query.rows == 1);
-    CV_Assert(query.cols == index_->d);  // query must match index dimension
+    if (query.cols != index_->d) {
+      throw std::runtime_error("Query dimension does not match index dimension: " + std::to_string(query.cols) +
+                               " vs " + std::to_string(index_->d));
+    }
 
     if (not use_gpu_) {
       // GPU variant: pass the search parameters (used by IVF)
@@ -145,8 +148,8 @@ class FaissDatabase {
   // Get the dimension of the index
   int dim() const { return index_ ? index_->d : 0; }
 
-  float l2_distance(const cv::Mat& a, const cv::Mat& b) const {
-    return faiss::fvec_L2sqr(a.ptr<float>(), b.ptr<float>(), a.cols);
+  float cosine_similarity(const cv::Mat& a, const cv::Mat& b) const {
+    return faiss::fvec_inner_product(a.ptr<float>(), b.ptr<float>(), a.cols);
   }
 
   auto nTotal() const { return index_ ? index_->ntotal : 0; }

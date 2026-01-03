@@ -20,7 +20,8 @@ LibSGMStereoDepth::Params::Params()
       min_disparity(0),
       lr_max_diff(1),
       census_type(1),  // SYMMETRIC_CENSUS_9x7
-      use_gpu(true) {}
+      use_gpu(true),
+      target_size() {}  // Empty size = no resize
 
 LibSGMStereoDepth::~LibSGMStereoDepth() = default;
 
@@ -86,6 +87,18 @@ void LibSGMStereoDepth::compute(const cv::Mat& left, const cv::Mat& right,
     right_input = right_gray;
   }
 
+  // Store original size for scaling back disparity
+  cv::Size original_size = left_input.size();
+  bool needs_resize = !params_.target_size.empty() && 
+                      (params_.target_size.width != original_size.width || 
+                       params_.target_size.height != original_size.height);
+  
+  // Resize inputs if target size is specified
+  if (needs_resize) {
+    cv::resize(left_input, left_input, params_.target_size, 0, 0, cv::INTER_LINEAR);
+    cv::resize(right_input, right_input, params_.target_size, 0, 0, cv::INTER_LINEAR);
+  }
+
   if (params_.use_gpu) {
     // Try GPU path first, fall back to CPU if CUDA not available in OpenCV
     try {
@@ -128,6 +141,21 @@ void LibSGMStereoDepth::compute(const cv::Mat& left, const cv::Mat& right,
     } catch (const cv::Exception& e) {
       throw std::runtime_error(std::string("LibSGM CPU execution failed: ") + e.what());
     }
+  }
+
+  // Scale disparity map back to original size if needed
+  if (needs_resize) {
+    // Calculate scaling factors
+    float scale_x = static_cast<float>(original_size.width) / params_.target_size.width;
+    float scale_y = static_cast<float>(original_size.height) / params_.target_size.height;
+    
+    // Resize disparity map back to original size
+    cv::Mat disparity_resized;
+    cv::resize(disparity, disparity_resized, original_size, 0, 0, cv::INTER_LINEAR);
+    
+    // Scale disparity values by the horizontal scaling factor
+    // (disparity is proportional to horizontal image resolution)
+    disparity_resized.convertTo(disparity, disparity.type(), scale_x);
   }
 #endif
 }
