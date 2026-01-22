@@ -52,3 +52,7 @@ target_link_libraries(onnx_stereo_depth_example
 target_include_directories(onnx_stereo_depth_example PRIVATE ${PCL_INCLUDE_DIRS})
 
 install(TARGETS onnx_stereo_depth_example DESTINATION bin)
+
+# Example executable
+add_executable(skyseg_example skyseg_example.cpp)
+target_link_libraries(skyseg_example xfeat-cpp ${OpenCV_LIBS} nvinfer cudart)

@@ -57,7 +57,7 @@ JistONNX::JistONNX(Ort::Env& env, const Params& params)
 
   // Get input/output names
   Ort::AllocatorWithDefaultOptions allocator;
-  
+
   // Input names - store strings first, then create const char* pointers
   size_t num_input_nodes = session_.GetInputCount();
   input_name_strings_.resize(num_input_nodes);
@@ -83,17 +83,15 @@ JistONNX::JistONNX(Ort::Env& env, const Params& params)
   // Verify input shape
   auto input_shape = session_.GetInputTypeInfo(0).GetTensorTypeAndShapeInfo().GetShape();
   std::cout << "JIST model loaded successfully." << std::endl;
-  std::cout << "Expected input shape: [batch=" << input_shape[0] 
-            << ", seq_length=" << input_shape[1]
-            << ", channels=" << input_shape[2]
-            << ", height=" << input_shape[3]
-            << ", width=" << input_shape[4] << "]" << std::endl;
+  std::cout << "Expected input shape: [batch=" << input_shape[0] << ", seq_length=" << input_shape[1]
+            << ", channels=" << input_shape[2] << ", height=" << input_shape[3] << ", width=" << input_shape[4] << "]"
+            << std::endl;
   std::cout << "Descriptor dimension: " << descriptor_dim_ << std::endl;
 }
 
 cv::Mat JistONNX::preprocess_image(const cv::Mat& image) {
   if (image.empty()) {
-    throw std::runtime_error("Input image is empty.");
+    throw std::runtime_error("JistONNX: Input image is empty.");
   }
 
   cv::Mat processed;
@@ -123,7 +121,7 @@ std::vector<float> JistONNX::prepare_input_tensor(const std::vector<cv::Mat>& im
   // Fill tensor in NCHW format for each frame in sequence
   for (int s = 0; s < seq_length_; ++s) {
     const cv::Mat& img = image_sequence[s];
-    
+
     if (img.type() != CV_32FC3) {
       throw std::runtime_error("Image must be preprocessed (CV_32FC3)");
     }
@@ -133,9 +131,7 @@ std::vector<float> JistONNX::prepare_input_tensor(const std::vector<cv::Mat>& im
       for (int h = 0; h < img_height_; ++h) {
         for (int w = 0; w < img_width_; ++w) {
           // Tensor layout: [batch=0, sequence=s, channel=c, height=h, width=w]
-          size_t tensor_idx = s * (3 * img_height_ * img_width_) +
-                              c * (img_height_ * img_width_) +
-                              h * img_width_ + w;
+          size_t tensor_idx = s * (3 * img_height_ * img_width_) + c * (img_height_ * img_width_) + h * img_width_ + w;
           tensor_data[tensor_idx] = img.at<cv::Vec3f>(h, w)[c];
         }
       }
@@ -145,24 +141,23 @@ std::vector<float> JistONNX::prepare_input_tensor(const std::vector<cv::Mat>& im
   return tensor_data;
 }
 
-std::vector<float> JistONNX::prepare_batch_input_tensor(
-    const std::vector<std::vector<cv::Mat>>& batch_sequences) {
+std::vector<float> JistONNX::prepare_batch_input_tensor(const std::vector<std::vector<cv::Mat>>& batch_sequences) {
   size_t batch_size = batch_sequences.size();
-  
+
   // Allocate tensor data: (batch_size, seq_length, 3, height, width)
   size_t total_size = batch_size * seq_length_ * 3 * img_height_ * img_width_;
   std::vector<float> tensor_data(total_size);
 
   for (size_t b = 0; b < batch_size; ++b) {
     const auto& image_sequence = batch_sequences[b];
-    
+
     if (image_sequence.size() != static_cast<size_t>(seq_length_)) {
       throw std::runtime_error("Sequence " + std::to_string(b) + " size mismatch");
     }
 
     for (int s = 0; s < seq_length_; ++s) {
       const cv::Mat& img = image_sequence[s];
-      
+
       if (img.type() != CV_32FC3) {
         throw std::runtime_error("Image must be preprocessed (CV_32FC3)");
       }
@@ -170,10 +165,8 @@ std::vector<float> JistONNX::prepare_batch_input_tensor(
       for (int c = 0; c < 3; ++c) {
         for (int h = 0; h < img_height_; ++h) {
           for (int w = 0; w < img_width_; ++w) {
-            size_t tensor_idx = b * (seq_length_ * 3 * img_height_ * img_width_) +
-                                s * (3 * img_height_ * img_width_) +
-                                c * (img_height_ * img_width_) +
-                                h * img_width_ + w;
+            size_t tensor_idx = b * (seq_length_ * 3 * img_height_ * img_width_) + s * (3 * img_height_ * img_width_) +
+                                c * (img_height_ * img_width_) + h * img_width_ + w;
             tensor_data[tensor_idx] = img.at<cv::Vec3f>(h, w)[c];
           }
         }
@@ -189,7 +182,7 @@ void JistONNX::normalize_descriptor(cv::Mat& descriptor) {
 
   // Compute L2 norm
   double norm = cv::norm(descriptor, cv::NORM_L2);
-  
+
   // Avoid division by zero
   if (norm < 1e-8) {
     std::cerr << "Warning: descriptor has near-zero norm" << std::endl;
@@ -223,23 +216,18 @@ cv::Mat JistONNX::infer(const std::vector<cv::Mat>& image_sequence) {
 
   // Create ONNX tensor
   Ort::Value input_tensor = Ort::Value::CreateTensor<float>(
-      memory_info_,
-      input_tensor_data.data(),
-      input_tensor_data.size(),
-      input_shape.data(),
-      input_shape.size());
+      memory_info_, input_tensor_data.data(), input_tensor_data.size(), input_shape.data(), input_shape.size());
 
   // Run inference
   std::vector<Ort::Value> input_tensors;
   input_tensors.push_back(std::move(input_tensor));
 
-  auto output_tensors = session_.Run(
-      Ort::RunOptions{nullptr},
-      input_names_.data(),
-      input_tensors.data(),
-      input_tensors.size(),
-      output_names_.data(),
-      output_names_.size());
+  auto output_tensors = session_.Run(Ort::RunOptions{nullptr},
+                                     input_names_.data(),
+                                     input_tensors.data(),
+                                     input_tensors.size(),
+                                     output_names_.data(),
+                                     output_names_.size());
 
   // Extract output
   float* output_data = output_tensors[0].GetTensorMutableData<float>();
@@ -271,7 +259,7 @@ cv::Mat JistONNX::infer_batch(const std::vector<std::vector<cv::Mat>>& batch_seq
   // Preprocess all images in all sequences
   std::vector<std::vector<cv::Mat>> preprocessed_batch;
   preprocessed_batch.reserve(batch_size);
-  
+
   for (const auto& sequence : batch_sequences) {
     std::vector<cv::Mat> preprocessed_seq;
     preprocessed_seq.reserve(sequence.size());
@@ -285,28 +273,22 @@ cv::Mat JistONNX::infer_batch(const std::vector<std::vector<cv::Mat>>& batch_seq
   std::vector<float> input_tensor_data = prepare_batch_input_tensor(preprocessed_batch);
 
   // Create input tensor shape: (batch_size, seq_length, 3, height, width)
-  std::vector<int64_t> input_shape = {
-      static_cast<int64_t>(batch_size), seq_length_, 3, img_height_, img_width_};
+  std::vector<int64_t> input_shape = {static_cast<int64_t>(batch_size), seq_length_, 3, img_height_, img_width_};
 
   // Create ONNX tensor
   Ort::Value input_tensor = Ort::Value::CreateTensor<float>(
-      memory_info_,
-      input_tensor_data.data(),
-      input_tensor_data.size(),
-      input_shape.data(),
-      input_shape.size());
+      memory_info_, input_tensor_data.data(), input_tensor_data.size(), input_shape.data(), input_shape.size());
 
   // Run inference
   std::vector<Ort::Value> input_tensors;
   input_tensors.push_back(std::move(input_tensor));
 
-  auto output_tensors = session_.Run(
-      Ort::RunOptions{nullptr},
-      input_names_.data(),
-      input_tensors.data(),
-      input_tensors.size(),
-      output_names_.data(),
-      output_names_.size());
+  auto output_tensors = session_.Run(Ort::RunOptions{nullptr},
+                                     input_names_.data(),
+                                     input_tensors.data(),
+                                     input_tensors.size(),
+                                     output_names_.data(),
+                                     output_names_.size());
 
   // Extract output
   float* output_data = output_tensors[0].GetTensorMutableData<float>();
@@ -317,11 +299,8 @@ cv::Mat JistONNX::infer_batch(const std::vector<std::vector<cv::Mat>>& batch_seq
   }
 
   // Create output matrix (batch_size x descriptor_dim)
-  cv::Mat descriptors(static_cast<int>(batch_size), 
-                      static_cast<int>(output_shape[1]), 
-                      CV_32F);
-  std::memcpy(descriptors.data, output_data, 
-              batch_size * output_shape[1] * sizeof(float));
+  cv::Mat descriptors(static_cast<int>(batch_size), static_cast<int>(output_shape[1]), CV_32F);
+  std::memcpy(descriptors.data, output_data, batch_size * output_shape[1] * sizeof(float));
 
   // Normalize each descriptor if requested
   if (normalize_output_) {
@@ -354,8 +333,6 @@ bool JistONNX::add_frame(const cv::Mat& image, cv::Mat& descriptor) {
   return false;
 }
 
-void JistONNX::reset_buffer() {
-  frame_buffer_.clear();
-}
+void JistONNX::reset_buffer() { frame_buffer_.clear(); }
 
 }  // namespace xfeat

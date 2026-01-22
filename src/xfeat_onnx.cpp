@@ -141,7 +141,7 @@ std::tuple<cv::Mat, float, float> XFeatONNX::preprocess_image(const cv::Mat& ima
   // check if image empty
   cv::Mat input_image = image;
   if (image.empty()) {
-    throw std::runtime_error("Input image is empty.");
+    throw std::runtime_error("Xfeat: Input image is empty.");
   }
 
   cv::resize(input_image, input_image, cv::Size(input_width_, input_height_));
