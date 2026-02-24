@@ -166,3 +166,11 @@ cython_debug/
 
 .cache
 compile_commands.json
+
+onnx_model
+thirdparty/libsgm
+*.bin
+*.csv
+output
+*.onnx
+*.pt
