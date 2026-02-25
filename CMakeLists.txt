@@ -59,9 +59,10 @@ add_library(${PROJECT_NAME} STATIC
     src/xfeat_onnx.cpp
     src/lighterglue_onnx.cpp
     src/xfeat_cv.cpp
-    src/xfeat_netvlad_onnx.cpp
-    src/netvlad_onnx.cpp
-    src/jist_onnx.cpp
+    src/place_recognition/place_recognizer.cpp
+    src/place_recognition/jist_onnx.cpp
+    src/place_recognition/patchnetvlad_onnx.cpp
+    src/place_recognition/patchnetvlad_matcher.cpp
     src/segmentation/skyseg_trt.cpp
     ${STEREO_DEPTH_SOURCES}
 )

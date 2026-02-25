@@ -192,18 +192,6 @@ if (similarity > 0.85f) {
 }
 ```
 
-### With NetVLAD for Hybrid Descriptor
-```cpp
-xfeat::NetVLADONNX netvlad(env, netvlad_params);
-xfeat::JistONNX jist(env, jist_params);
-
-// Compare both descriptors
-cv::Mat jist_desc = jist.infer(sequence);
-cv::Mat netvlad_desc = netvlad.transform(features);
-
-// Combine or compare
-```
-
 ## Similarity Thresholds
 
 | Scenario | Threshold | Notes |

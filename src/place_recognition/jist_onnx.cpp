@@ -1,10 +1,9 @@
-#include "xfeat-cpp/jist_onnx.h"
+#include "xfeat-cpp/place_recognition/jist_onnx.h"
 
 #include <cuda_runtime.h>
 
 #include <algorithm>
 #include <iostream>
-#include <opencv2/core/persistence.hpp>
 #include <opencv2/imgproc.hpp>
 #include <stdexcept>
 
@@ -312,27 +311,5 @@ cv::Mat JistONNX::infer_batch(const std::vector<std::vector<cv::Mat>>& batch_seq
 
   return descriptors;
 }
-
-bool JistONNX::add_frame(const cv::Mat& image, cv::Mat& descriptor) {
-  // Add frame to buffer
-  frame_buffer_.push_back(image.clone());
-
-  // Remove oldest frame if buffer exceeds seq_length
-  if (frame_buffer_.size() > static_cast<size_t>(seq_length_)) {
-    frame_buffer_.pop_front();
-  }
-
-  // Check if buffer is ready
-  if (frame_buffer_.size() == static_cast<size_t>(seq_length_)) {
-    // Convert deque to vector for inference
-    std::vector<cv::Mat> sequence(frame_buffer_.begin(), frame_buffer_.end());
-    descriptor = infer(sequence);
-    return true;
-  }
-
-  return false;
-}
-
-void JistONNX::reset_buffer() { frame_buffer_.clear(); }
 
 }  // namespace xfeat

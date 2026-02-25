@@ -342,4 +342,4 @@ Same as xfeat-cpp project.
 
 - [JIST Python Implementation](../JIST/)
 - [XFeat Feature Matching](xfeat_onnx.h)
-- [NetVLAD Wrapper](xfeat_netvlad_onnx.h)
+
