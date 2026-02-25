@@ -52,6 +52,14 @@ target_link_libraries(patchnetvlad_example
 
 install(TARGETS patchnetvlad_example DESTINATION bin)
 
+add_executable(mixvpr_example mixvpr_example.cpp)
+target_link_libraries(mixvpr_example
+    PRIVATE
+    ${PROJECT_NAME}
+)
+
+install(TARGETS mixvpr_example DESTINATION bin)
+
 # Example executable
 add_executable(skyseg_example skyseg_example.cpp)
 target_link_libraries(skyseg_example xfeat-cpp ${OpenCV_LIBS} nvinfer cudart)

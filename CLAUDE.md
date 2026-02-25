@@ -62,6 +62,7 @@ enum class MatcherType { BF, FLANN, LIGHTERGLUE, GPU_BF };
 - `JistONNX` — Sequence-based place recognition (ResNet + SeqGeM). Supports streaming via `add_frame()` with a rolling buffer, or batch `infer_batch()`. Default: 5 frames, 288×512 input, 512-D output.
 - `PatchNetVLADONNX` — Single-image place recognition (VGG-16 + NetVLAD). `infer()` returns a 4096-D global descriptor; `extract()` returns global + per-scale local patch descriptors for re-ranking. Default: 480×640 input, 4096-D output.
 - `PatchNetVLADMatcher` — Local patch RANSAC re-ranker. Ports `PatchMatcher.compare_two_ransac()` from Python. Computes mutual nearest-neighbor matches on 3 patch scales then runs RANSAC homography; returns a weighted inlier-ratio score. Default patch sizes: {2, 5, 8}, weights: {0.45, 0.15, 0.40}.
+- `MixVPRONNX` — Single-image place recognition (ResNet-50 + MLP mixer). `infer()` returns a 4096-D L2-normalized global descriptor. Default: 320×320 input, 4096-D output.
 
 **Vector Search**
 - `FaissDatabase` — Wraps FAISS for descriptor indexing and kNN search.
@@ -106,6 +107,12 @@ Image → PatchNetVLADONNX::extract() → Features{global_desc [1,4096], local_d
       → PatchNetVLADMatcher::match(query_features, db_features) → MatchResult::score → re-ranked list
 ```
 
+Place recognition pipeline (MixVPR, single-image):
+```
+Image → MixVPRONNX::infer() → global_desc [1,4096] (L2-normalized)
+      → FaissDatabase::add() / search() → loop closure candidates
+```
+
 Stereo depth pipeline:
 ```
 Rectified stereo pair → StereoDepth::compute() → disparity (CV_16S or CV_32F)
@@ -125,6 +132,7 @@ Python utilities:
 Models are stored in `onnx_model/` (not tracked by git). Key models:
 - `lg_640x480_dyn.onnx` — LighterGlue for 640×480
 - `patchnetvlad_trt.onnx` — PatchNetVLAD; input `[1,3,480,640]`, outputs `global_feat [1,4096]` + `local_0/1/2 [1,4096,P_i]`
+- `mixvpr_resnet50_4096d.onnx` — MixVPR; input `image [1,3,320,320]`, output `descriptor [1,4096]`
 - LightStereo engines: `LightStereo-{S,M,L}-*.engine` (TensorRT)
 - `skyseg.engine` — Sky segmentation (TensorRT)
 

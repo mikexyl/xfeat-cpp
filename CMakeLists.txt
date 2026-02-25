@@ -63,6 +63,7 @@ add_library(${PROJECT_NAME} STATIC
     src/place_recognition/jist_onnx.cpp
     src/place_recognition/patchnetvlad_onnx.cpp
     src/place_recognition/patchnetvlad_matcher.cpp
+    src/place_recognition/mixvpr_onnx.cpp
     src/segmentation/skyseg_trt.cpp
     ${STEREO_DEPTH_SOURCES}
 )
