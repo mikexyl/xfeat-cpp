@@ -15,15 +15,6 @@ target_link_libraries(xfeat_example
 
 install(TARGETS xfeat_example DESTINATION bin)
 
-add_executable(batch_match_example batch_match_example.cpp)
-target_link_libraries(batch_match_example 
-    PRIVATE
-    ${PROJECT_NAME}
-    Boost::program_options
-)
-
-install(TARGETS batch_match_example DESTINATION bin)
-
 
 add_executable(feature_nms_example feature_nms.cpp)
 target_link_libraries(feature_nms_example
@@ -52,6 +43,22 @@ target_link_libraries(onnx_stereo_depth_example
 target_include_directories(onnx_stereo_depth_example PRIVATE ${PCL_INCLUDE_DIRS})
 
 install(TARGETS onnx_stereo_depth_example DESTINATION bin)
+
+add_executable(patchnetvlad_example patchnetvlad_example.cpp)
+target_link_libraries(patchnetvlad_example
+    PRIVATE
+    ${PROJECT_NAME}
+)
+
+install(TARGETS patchnetvlad_example DESTINATION bin)
+
+add_executable(mixvpr_example mixvpr_example.cpp)
+target_link_libraries(mixvpr_example
+    PRIVATE
+    ${PROJECT_NAME}
+)
+
+install(TARGETS mixvpr_example DESTINATION bin)
 
 # Example executable
 add_executable(skyseg_example skyseg_example.cpp)

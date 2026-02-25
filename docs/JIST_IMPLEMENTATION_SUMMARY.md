@@ -132,7 +132,7 @@ make -j$(nproc)
 ## API Design Philosophy
 
 ### Consistency with xfeat-cpp
-- Similar pattern to `XFeatONNX` and `NetVLADONNX` classes
+- Similar pattern to `XFeatONNX` class
 - Uses same ONNX Runtime setup and GPU configuration
 - Compatible with existing xfeat-cpp workflows
 

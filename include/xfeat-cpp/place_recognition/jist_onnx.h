@@ -2,10 +2,11 @@
 
 #include <onnxruntime_cxx_api.h>
 
-#include <deque>
 #include <opencv2/core.hpp>
 #include <string>
 #include <vector>
+
+#include "xfeat-cpp/place_recognition/place_recognizer.h"
 
 namespace xfeat {
 
@@ -27,7 +28,7 @@ namespace xfeat {
  * - fc_output_dim: 512 (frame descriptor)
  * - aggregation: seqgem (sequence descriptor same as frame)
  */
-class JistONNX {
+class JistONNX : public PlaceRecognizer {
  public:
   struct Params {
     std::string model_path;        // Path to JIST ONNX model
@@ -47,73 +48,29 @@ class JistONNX {
   JistONNX(Ort::Env& env, const Params& params);
 
   /**
-   * @brief Process a sequence of images and return a descriptor
+   * @brief Process a sequence of images and return a descriptor.
    *
    * @param image_sequence Vector of images (seq_length images, BGR format)
-   * @return cv::Mat Single descriptor vector (1 x descriptor_dim, CV_32F)
+   * @return cv::Mat Single descriptor (1 x descriptor_dim, CV_32F)
    *
    * Images will be automatically resized to the configured dimensions.
    * The sequence should contain exactly seq_length images.
    */
-  cv::Mat infer(const std::vector<cv::Mat>& image_sequence);
+  cv::Mat infer(const std::vector<cv::Mat>& image_sequence) override;
 
   /**
-   * @brief Process a batch of sequences
+   * @brief Process a batch of sequences (efficient batched ONNX inference).
    *
    * @param batch_sequences Batch of image sequences, each with seq_length images
    * @return cv::Mat Descriptors (batch_size x descriptor_dim, CV_32F)
    */
-  cv::Mat infer_batch(const std::vector<std::vector<cv::Mat>>& batch_sequences);
-
-  /**
-   * @brief Add an image to the rolling buffer and return descriptor if ready
-   *
-   * This is useful for online/streaming scenarios where you process images
-   * one at a time and want to maintain a rolling window.
-   *
-   * @param image New image to add (will be added to the end of buffer)
-   * @param descriptor Output descriptor (only written when buffer is full)
-   * @return true if a descriptor was computed (buffer is full), false otherwise
-   *
-   * Example usage:
-   * @code
-   * JistONNX jist(env, params);
-   * for (const auto& frame : video_frames) {
-   *     cv::Mat descriptor;
-   *     if (jist.add_frame(frame, descriptor)) {
-   *         // Process descriptor for this sequence
-   *         database.add(descriptor);
-   *     }
-   * }
-   * @endcode
-   */
-  bool add_frame(const cv::Mat& image, cv::Mat& descriptor);
-
-  /**
-   * @brief Reset the internal rolling buffer
-   *
-   * Call this when starting a new video sequence or when you want to
-   * clear the accumulated frames.
-   */
-  void reset_buffer();
-
-  /**
-   * @brief Get the current buffer size
-   * @return Number of frames currently in buffer
-   */
-  size_t get_buffer_size() const { return frame_buffer_.size(); }
-
-  /**
-   * @brief Check if the buffer is ready (full) for inference
-   * @return true if buffer has seq_length frames
-   */
-  bool is_buffer_ready() const { return frame_buffer_.size() >= static_cast<size_t>(seq_length_); }
+  cv::Mat infer_batch(const std::vector<std::vector<cv::Mat>>& batch_sequences) override;
 
   // Accessors
-  int get_seq_length() const { return seq_length_; }
+  int get_seq_length() const override { return seq_length_; }
   int get_img_height() const { return img_height_; }
   int get_img_width() const { return img_width_; }
-  int get_descriptor_dim() const { return descriptor_dim_; }
+  int get_descriptor_dim() const override { return descriptor_dim_; }
 
  private:
   Ort::SessionOptions session_options_;
@@ -131,9 +88,6 @@ class JistONNX {
   std::vector<std::string> output_name_strings_;
   std::vector<const char*> input_names_;
   std::vector<const char*> output_names_;
-
-  // Rolling buffer for streaming inference
-  std::deque<cv::Mat> frame_buffer_;
 
   /**
    * @brief Preprocess a single image
