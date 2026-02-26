@@ -30,14 +30,11 @@ namespace xfeat {
  */
 class JistONNX : public PlaceRecognizer {
  public:
-  struct Params {
-    std::string model_path;        // Path to JIST ONNX model
-    bool use_gpu = true;           // Use GPU for inference
-    int seq_length = 5;            // Number of frames in sequence
-    int img_height = 288;          // Input image height
-    int img_width = 512;           // Input image width
-    int descriptor_dim = 512;      // Output descriptor dimension
-    bool normalize_output = true;  // L2-normalize output descriptors
+  struct Params : PlaceRecognizer::Params {
+    Params() {
+      img_height = 288;
+      img_width = 512;
+    }
   };
 
   /**

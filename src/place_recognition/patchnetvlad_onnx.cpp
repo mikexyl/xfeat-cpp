@@ -13,7 +13,7 @@ PatchNetVLADONNX::PatchNetVLADONNX(Ort::Env& env, const Params& params)
       memory_info_(Ort::MemoryInfo::CreateCpu(OrtDeviceAllocator, OrtMemTypeCPU)),
       img_height_(params.img_height),
       img_width_(params.img_width),
-      descriptor_dim_(params.descriptor_dim),
+      descriptor_dim_(0),
       normalize_output_(params.normalize_output) {
   // Configure session options
   session_options_.SetIntraOpNumThreads(1);
@@ -76,6 +76,10 @@ PatchNetVLADONNX::PatchNetVLADONNX(Ort::Env& env, const Params& params)
   }
 
   auto input_shape = session_.GetInputTypeInfo(0).GetTensorTypeAndShapeInfo().GetShape();
+
+  auto output_shape = session_.GetOutputTypeInfo(0).GetTensorTypeAndShapeInfo().GetShape();
+  descriptor_dim_ = static_cast<int>(output_shape[1]);
+
   std::cout << "PatchNetVLAD model loaded. Input shape: [" << input_shape[0] << ", " << input_shape[1] << ", "
             << input_shape[2] << ", " << input_shape[3] << "]" << std::endl;
   std::cout << "Descriptor dimension: " << descriptor_dim_ << std::endl;

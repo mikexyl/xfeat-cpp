@@ -2,7 +2,7 @@
 
 #include <deque>
 #include <opencv2/core.hpp>
-#include <stdexcept>
+#include <string>
 #include <vector>
 
 namespace xfeat {
@@ -24,6 +24,20 @@ namespace xfeat {
 class PlaceRecognizer {
  public:
   virtual ~PlaceRecognizer() = default;
+
+  /**
+   * @brief Common configuration parameters shared by all VPR models.
+   *
+   * Derived model Params structs inherit from this and set model-specific
+   * defaults for img_height and img_width.
+   */
+  struct Params {
+    std::string model_path;       // Path to ONNX model file
+    bool use_gpu = true;          // Use GPU (CUDA) for inference
+    int img_height = 0;           // Input image height (set by derived model)
+    int img_width = 0;            // Input image width  (set by derived model)
+    bool normalize_output = true; // L2-normalize output descriptors
+  };
 
   /**
    * @brief Process a sequence of images and return a descriptor.

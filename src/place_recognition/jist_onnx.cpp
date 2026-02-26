@@ -12,10 +12,10 @@ namespace xfeat {
 JistONNX::JistONNX(Ort::Env& env, const Params& params)
     : session_(nullptr),
       memory_info_(Ort::MemoryInfo::CreateCpu(OrtDeviceAllocator, OrtMemTypeCPU)),
-      seq_length_(params.seq_length),
+      seq_length_(0),
       img_height_(params.img_height),
       img_width_(params.img_width),
-      descriptor_dim_(params.descriptor_dim),
+      descriptor_dim_(0),
       normalize_output_(params.normalize_output) {
   // Configure session options
   session_options_.SetIntraOpNumThreads(1);
@@ -79,8 +79,13 @@ JistONNX::JistONNX(Ort::Env& env, const Params& params)
     std::cout << "Output " << i << ": " << output_names_[i] << std::endl;
   }
 
-  // Verify input shape
+  // Read seq_length and descriptor_dim from model shapes
   auto input_shape = session_.GetInputTypeInfo(0).GetTensorTypeAndShapeInfo().GetShape();
+  seq_length_ = static_cast<int>(input_shape[1]);
+
+  auto output_shape = session_.GetOutputTypeInfo(0).GetTensorTypeAndShapeInfo().GetShape();
+  descriptor_dim_ = static_cast<int>(output_shape[1]);
+
   std::cout << "JIST model loaded successfully." << std::endl;
   std::cout << "Expected input shape: [batch=" << input_shape[0] << ", seq_length=" << input_shape[1]
             << ", channels=" << input_shape[2] << ", height=" << input_shape[3] << ", width=" << input_shape[4] << "]"

@@ -25,13 +25,11 @@ namespace xfeat {
  */
 class MixVPRONNX : public PlaceRecognizer {
  public:
-  struct Params {
-    std::string model_path;
-    bool use_gpu = true;
-    int img_height = 320;
-    int img_width = 320;
-    int descriptor_dim = 4096;
-    bool normalize_output = true;  // L2-normalize global descriptor
+  struct Params : PlaceRecognizer::Params {
+    Params() {
+      img_height = 320;
+      img_width = 320;
+    }
   };
 
   /**
