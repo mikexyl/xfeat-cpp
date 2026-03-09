@@ -30,6 +30,12 @@ ctest --preset default
 
 The `CMakePresets.json` sets `ONNXRUNTIME_ROOTDIR` and exports compile commands automatically. CUDA architecture is hardcoded to SM 89 (RTX 4090) in `CMakeLists.txt`.
 
+### Install (for downstream CMake projects)
+```bash
+cmake --install build --prefix /path/to/install
+# Downstream: find_package(xfeat-cpp REQUIRED)
+```
+
 ### Submodules
 Three submodules under `thirdparty/`: `libsgm`, `gms`, `lightstereo`. Run `git submodule update --init --recursive` before first build. CMakeLists.txt automatically patches `thirdparty/libsgm/CMakeLists.txt` for export compatibility.
 
@@ -59,10 +65,18 @@ enum class MatcherType { BF, FLANN, LIGHTERGLUE, GPU_BF };
 - `LighterGlueCV` — OpenCV-style wrapper around LighterGlueONNX; default image size 640×480.
 
 **Place Recognition**
-- `JistONNX` — Sequence-based place recognition (ResNet + SeqGeM). Supports streaming via `add_frame()` with a rolling buffer, or batch `infer_batch()`. Default: 5 frames, 288×512 input, 512-D output.
-- `PatchNetVLADONNX` — Single-image place recognition (VGG-16 + NetVLAD). `infer()` returns a 4096-D global descriptor; `extract()` returns global + per-scale local patch descriptors for re-ranking. Default: 480×640 input, 4096-D output.
+
+All VPR models inherit from the abstract base class `PlaceRecognizer` (`include/xfeat-cpp/place_recognition/place_recognizer.h`). It provides:
+- `infer(images)` / `infer(image)` — pure virtual; returns a descriptor `cv::Mat` (1 × dim, CV_32F)
+- `infer_batch(batch)` — default loops over `infer()`; override for GPU batching
+- `add_frame(image, descriptor)` / `reset_buffer()` — concrete streaming API backed by a rolling `frame_buffer_` deque
+- `get_seq_length()` / `get_descriptor_dim()` — pure virtual; single-image models return seq_length=1
+
+Concrete implementations:
+- `JistONNX` — Sequence-based (ResNet + SeqGeM). Default: 5 frames, 288×512 input, 512-D output.
+- `PatchNetVLADONNX` — Single-image (VGG-16 + NetVLAD). `infer()` returns a 4096-D global descriptor; `extract()` returns global + per-scale local patch descriptors for re-ranking. Default: 480×640 input, 4096-D output.
 - `PatchNetVLADMatcher` — Local patch RANSAC re-ranker. Ports `PatchMatcher.compare_two_ransac()` from Python. Computes mutual nearest-neighbor matches on 3 patch scales then runs RANSAC homography; returns a weighted inlier-ratio score. Default patch sizes: {2, 5, 8}, weights: {0.45, 0.15, 0.40}.
-- `MixVPRONNX` — Single-image place recognition (ResNet-50 + MLP mixer). `infer()` returns a 4096-D L2-normalized global descriptor. Default: 320×320 input, 4096-D output.
+- `MixVPRONNX` — Single-image (ResNet-50 + MLP mixer). `infer()` returns a 4096-D L2-normalized global descriptor. Default: 320×320 input, 4096-D output.
 
 **Vector Search**
 - `FaissDatabase` — Wraps FAISS for descriptor indexing and kNN search.
@@ -118,6 +132,15 @@ Stereo depth pipeline:
 Rectified stereo pair → StereoDepth::compute() → disparity (CV_16S or CV_32F)
                       → depth map (CV_32F, meters)
 ```
+
+## Examples
+
+Built under `examples/`; require Boost + PCL. Demonstrate real usage patterns:
+- `main` — XFeat feature detection and matching
+- `feature_nms` — NMS on detected keypoints
+- `stereo_depth_example` / `onnx_stereo_depth_example` — stereo depth pipelines
+- `patchnetvlad_example` / `mixvpr_example` — place recognition pipelines
+- `skyseg_example` — sky segmentation (TensorRT)
 
 ## Scripts & Utilities
 

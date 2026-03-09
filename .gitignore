@@ -174,3 +174,5 @@ thirdparty/libsgm
 output
 *.onnx
 *.pt
+
+.claude
