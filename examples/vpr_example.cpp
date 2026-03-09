@@ -328,25 +328,21 @@ int main(int argc, char* argv[]) {
     model->infer(std::vector<cv::Mat>(seq, first));
   }
 
-  // ── Init XFeat + LighterGlue ─────────────────────────────────────────────
+  // ── XFeat + LighterGlue — params only; models are loaded lazily on first [M] press ──
   const std::string res = "640x480";
   XFeatONNX::Params xfp;
-  xfp.xfeat_path            = xfeat_dir + "/xfeat_" + res + ".onnx";
-  xfp.interp_bilinear_path  = xfeat_dir + "/interpolator_bilinear_" + res + ".onnx";
-  xfp.interp_bicubic_path   = xfeat_dir + "/interpolator_bicubic_" + res + ".onnx";
-  xfp.interp_nearest_path   = xfeat_dir + "/interpolator_nearest_" + res + ".onnx";
+  xfp.xfeat_path           = xfeat_dir + "/xfeat_" + res + ".onnx";
+  xfp.interp_bilinear_path = xfeat_dir + "/interpolator_bilinear_" + res + ".onnx";
+  xfp.interp_bicubic_path  = xfeat_dir + "/interpolator_bicubic_" + res + ".onnx";
+  xfp.interp_nearest_path  = xfeat_dir + "/interpolator_nearest_" + res + ".onnx";
   xfp.use_gpu = true;
   xfp.nkpts   = 1024;
-  std::cout << "Loading XFeat + LighterGlue models from " << xfeat_dir << "...\n";
-  auto xfeat = std::make_unique<XFeatONNX>(env, xfp);
-
   LighterGlueCV::Params lgp;
-  lgp.model_path  = xfeat_dir + "/lg_" + res + "_dyn.onnx";
-  lgp.use_gpu     = true;
-  lgp.n_kpts      = xfp.nkpts;
-  auto lighter_glue = std::make_unique<LighterGlueCV>(env, lgp);
-  lighter_glue->warmup();
-  std::cout << "  XFeat + LighterGlue ready.\n\n";
+  lgp.model_path = xfeat_dir + "/lg_" + res + "_dyn.onnx";
+  lgp.use_gpu    = true;
+  lgp.n_kpts     = xfp.nkpts;
+  std::unique_ptr<XFeatONNX>    xfeat;
+  std::unique_ptr<LighterGlueCV> lighter_glue;
 
   // ── Extract DB descriptors ────────────────────────────────────────────────
   auto [db_paths, db_descs] = extract_descs(*model, db_paths_ds, "DB");
@@ -404,13 +400,22 @@ int main(int argc, char* argv[]) {
     state.selected_idx = -1;  // reset selection on new query
   };
 
-  // Run XFeat detect+LighterGlue match on query vs currently selected/best DB frame
+  // Run XFeat detect+LighterGlue match on query vs currently selected/best DB frame.
+  // Models are loaded on the first call so they don't consume GPU memory during extraction.
   static const std::string kMatchWin = "XFeat + LighterGlue";
   auto run_matching = [&]() {
     int sel = (state.selected_idx >= 0) ? state.selected_idx : state.best_idx;
     if (sel < 0 || state.active_paths == nullptr || state.query_frame.empty()) {
       std::cerr << "[MATCH] No active query — press [R] first.\n";
       return;
+    }
+    // Lazy init: load models on first use
+    if (!xfeat) {
+      std::cout << "[MATCH] Loading XFeat + LighterGlue from " << xfeat_dir << "...\n";
+      xfeat = std::make_unique<XFeatONNX>(env, xfp);
+      lighter_glue = std::make_unique<LighterGlueCV>(env, lgp);
+      lighter_glue->warmup();
+      std::cout << "[MATCH] Ready.\n";
     }
     const auto& ap = *state.active_paths;
     cv::Mat db_frame = cv::imread(ap[sel].string(), cv::IMREAD_COLOR);
