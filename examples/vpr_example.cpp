@@ -10,9 +10,11 @@
 #include <string>
 #include <vector>
 
+#include "xfeat-cpp/lighterglue_cv.h"
 #include "xfeat-cpp/place_recognition/jist_onnx.h"
 #include "xfeat-cpp/place_recognition/mixvpr_onnx.h"
 #include "xfeat-cpp/place_recognition/place_recognizer.h"
+#include "xfeat-cpp/xfeat_onnx.h"
 
 namespace fs = std::filesystem;
 using namespace xfeat;
@@ -24,9 +26,10 @@ static constexpr int kPadL = 60, kPadR = 20, kPadT = 20;
 
 static void print_usage(const char* prog) {
   std::cerr << "Usage: " << prog
-            << " <model-type> <model-path> <query-dir> <db-dir> [downsample]\n"
+            << " <model-type> <model-path> <query-dir> <db-dir> [downsample] [xfeat-dir]\n"
             << "  model-type : mixvpr | jist\n"
-            << "  downsample : keep every N-th DB image (default 5)\n";
+            << "  downsample : keep every N-th DB image (default 5)\n"
+            << "  xfeat-dir  : folder with XFeat/LighterGlue ONNX models (default onnx_model)\n";
 }
 
 // ── Load sorted image paths from a directory ────────────────────────────────
@@ -173,7 +176,7 @@ static cv::Mat render_canvas(const DisplayState& s) {
               s.model_type + " | seq=" + std::to_string(s.seq_length) +
                   " dim=" + std::to_string(s.descriptor_dim) + " | DB: " + s.db_name + " (every " +
                   std::to_string(s.downsample) + "-th)" + mode_tag +
-                  "  [R/Spc] new query  [S] toggle mode  [Q/Esc] quit",
+                  "  [R/Spc] new query  [S] toggle mode  [M] match  [Q/Esc] quit",
               {8, 22}, cv::FONT_HERSHEY_SIMPLEX, 0.42, cv::Scalar(200, 200, 200), 1);
 
   cv::Mat canvas;
@@ -261,6 +264,15 @@ static std::pair<std::vector<fs::path>, std::vector<cv::Mat>> extract_descs(
   return {out_paths, out_descs};
 }
 
+// ── Convert DetectionResult keypoints (N×2 CV_32F) to vector<KeyPoint> ──────
+static std::vector<cv::KeyPoint> to_keypoints(const cv::Mat& kpts_mat) {
+  std::vector<cv::KeyPoint> kpts;
+  kpts.reserve(kpts_mat.rows);
+  for (int i = 0; i < kpts_mat.rows; ++i)
+    kpts.emplace_back(kpts_mat.at<float>(i, 0), kpts_mat.at<float>(i, 1), 1.f);
+  return kpts;
+}
+
 int main(int argc, char* argv[]) {
   if (argc < 5) { print_usage(argv[0]); return 1; }
 
@@ -269,6 +281,7 @@ int main(int argc, char* argv[]) {
   std::string query_dir = argv[3];
   std::string db_dir = argv[4];
   int downsample = (argc > 5) ? std::stoi(argv[5]) : 5;
+  std::string xfeat_dir = (argc > 6) ? argv[6] : "onnx_model";
 
   if (model_type != "mixvpr" && model_type != "jist") {
     std::cerr << "Unknown model-type '" << model_type << "'. Choose mixvpr or jist.\n";
@@ -314,6 +327,26 @@ int main(int argc, char* argv[]) {
     cv::Mat first = cv::imread(query_paths[0].string(), cv::IMREAD_COLOR);
     model->infer(std::vector<cv::Mat>(seq, first));
   }
+
+  // ── Init XFeat + LighterGlue ─────────────────────────────────────────────
+  const std::string res = "640x480";
+  XFeatONNX::Params xfp;
+  xfp.xfeat_path            = xfeat_dir + "/xfeat_" + res + ".onnx";
+  xfp.interp_bilinear_path  = xfeat_dir + "/interpolator_bilinear_" + res + ".onnx";
+  xfp.interp_bicubic_path   = xfeat_dir + "/interpolator_bicubic_" + res + ".onnx";
+  xfp.interp_nearest_path   = xfeat_dir + "/interpolator_nearest_" + res + ".onnx";
+  xfp.use_gpu = true;
+  xfp.nkpts   = 1024;
+  std::cout << "Loading XFeat + LighterGlue models from " << xfeat_dir << "...\n";
+  auto xfeat = std::make_unique<XFeatONNX>(env, xfp);
+
+  LighterGlueCV::Params lgp;
+  lgp.model_path  = xfeat_dir + "/lg_" + res + "_dyn.onnx";
+  lgp.use_gpu     = true;
+  lgp.n_kpts      = xfp.nkpts;
+  auto lighter_glue = std::make_unique<LighterGlueCV>(env, lgp);
+  lighter_glue->warmup();
+  std::cout << "  XFeat + LighterGlue ready.\n\n";
 
   // ── Extract DB descriptors ────────────────────────────────────────────────
   auto [db_paths, db_descs] = extract_descs(*model, db_paths_ds, "DB");
@@ -371,7 +404,60 @@ int main(int argc, char* argv[]) {
     state.selected_idx = -1;  // reset selection on new query
   };
 
-  std::cout << "Press [R]/[Space] new query | [S] toggle self-test | [Q]/[Esc] quit\n"
+  // Run XFeat detect+LighterGlue match on query vs currently selected/best DB frame
+  static const std::string kMatchWin = "XFeat + LighterGlue";
+  auto run_matching = [&]() {
+    int sel = (state.selected_idx >= 0) ? state.selected_idx : state.best_idx;
+    if (sel < 0 || state.active_paths == nullptr || state.query_frame.empty()) {
+      std::cerr << "[MATCH] No active query — press [R] first.\n";
+      return;
+    }
+    const auto& ap = *state.active_paths;
+    cv::Mat db_frame = cv::imread(ap[sel].string(), cv::IMREAD_COLOR);
+    if (db_frame.empty()) { std::cerr << "[MATCH] Failed to read DB frame.\n"; return; }
+
+    cv::Mat q_gray, db_gray;
+    cv::cvtColor(state.query_frame, q_gray, cv::COLOR_BGR2GRAY);
+    cv::cvtColor(db_frame, db_gray, cv::COLOR_BGR2GRAY);
+
+    auto t0 = std::chrono::high_resolution_clock::now();
+    auto det_q  = xfeat->detect_and_compute(q_gray, xfp.nkpts);
+    auto det_db = xfeat->detect_and_compute(db_gray, xfp.nkpts);
+
+    std::vector<cv::DMatch> matches;
+    cv::Size q_size(state.query_frame.cols, state.query_frame.rows);
+    cv::Size db_size(db_frame.cols, db_frame.rows);
+    lighter_glue->match(det_q, q_size, det_db, db_size, matches);
+    double ms = std::chrono::duration<double, std::milli>(
+                    std::chrono::high_resolution_clock::now() - t0).count();
+
+    std::cout << "[MATCH] " << matches.size() << " matches  (" << ms << " ms)"
+              << "  DB[" << sel << "] " << ap[sel].filename().string()
+              << "  score=" << state.similarities[sel] << "\n";
+
+    auto q_kpts  = to_keypoints(det_q.keypoints);
+    auto db_kpts = to_keypoints(det_db.keypoints);
+
+    cv::Mat match_img;
+    cv::drawMatches(state.query_frame, q_kpts, db_frame, db_kpts, matches, match_img,
+                    cv::Scalar::all(-1), cv::Scalar::all(-1), {},
+                    cv::DrawMatchesFlags::NOT_DRAW_SINGLE_POINTS);
+
+    // Overlay stats
+    std::string label = "XFeat+LighterGlue | " + std::to_string(matches.size()) +
+                        " matches | " + cv::format("%.1f ms", ms) +
+                        " | DB[" + std::to_string(sel) + "] score=" +
+                        cv::format("%.3f", state.similarities[sel]);
+    cv::putText(match_img, label, {8, 24}, cv::FONT_HERSHEY_SIMPLEX, 0.6,
+                cv::Scalar(0, 0, 0), 3);
+    cv::putText(match_img, label, {8, 24}, cv::FONT_HERSHEY_SIMPLEX, 0.6,
+                cv::Scalar(255, 255, 255), 1);
+
+    cv::namedWindow(kMatchWin, cv::WINDOW_NORMAL);
+    cv::imshow(kMatchWin, match_img);
+  };
+
+  std::cout << "Press [R]/[Space] new query | [S] toggle self-test | [M] match | [Q]/[Esc] quit\n"
             << "Click on the plot to inspect any DB match.\n\n";
 
   cv::namedWindow(state.win_title, cv::WINDOW_NORMAL);
@@ -396,6 +482,7 @@ int main(int argc, char* argv[]) {
       canvas = render_canvas(state);
       if (!canvas.empty()) cv::imshow(state.win_title, canvas);
     }
+    if (key == 'm' || key == 'M') run_matching();
   }
 
   if (!canvas.empty()) {
