@@ -89,12 +89,12 @@ static cv::Mat draw_similarity_plot(const std::vector<float>& scores,
 
 int main(int argc, char* argv[]) {
   std::string model_path =
-      (argc > 1) ? argv[1] : "/workspaces/src/xfeat-cpp/onnx_model/mixvpr_resnet50_4096d.onnx";
-  std::string query_dir = (argc > 2) ? argv[2]
+      (argc > 4) ? argv[4] : "/workspaces/src/xfeat-cpp/onnx_model/mixvpr_resnet50_4096d.onnx";
+  std::string query_dir = (argc > 2) ? argv[1]
                                      : "/datasets_extra/graco/aerial-05-40m_images/camera_left_image_raw";
-  std::string db_dir = (argc > 3) ? argv[3]
+  std::string db_dir = (argc > 3) ? argv[2]
                                   : "/datasets_extra/graco/aerial-07-25m_images/camera_left_image_raw";
-  int downsample = (argc > 4) ? std::stoi(argv[4]) : 5;  // keep every Nth DB image
+  int downsample = (argc > 3) ? std::stoi(argv[3]) : 5;  // keep every Nth DB image
 
   std::cout << "Model:        " << model_path << "\n";
   std::cout << "Query dir:    " << query_dir << "\n";

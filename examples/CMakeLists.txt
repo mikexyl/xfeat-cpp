@@ -60,6 +60,14 @@ target_link_libraries(mixvpr_example
 
 install(TARGETS mixvpr_example DESTINATION bin)
 
+add_executable(vpr_example vpr_example.cpp)
+target_link_libraries(vpr_example
+    PRIVATE
+    ${PROJECT_NAME}
+)
+
+install(TARGETS vpr_example DESTINATION bin)
+
 # Example executable
 add_executable(skyseg_example skyseg_example.cpp)
 target_link_libraries(skyseg_example xfeat-cpp ${OpenCV_LIBS} nvinfer cudart)
