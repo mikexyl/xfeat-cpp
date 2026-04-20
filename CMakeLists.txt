@@ -17,8 +17,16 @@ find_package(OpenMP REQUIRED)
 # Try to find TensorRT (optional for LightStereo)
 find_library(TENSORRT_LIBRARY nvinfer
     PATHS /usr/local/lib /usr/lib
+          /usr/lib/x86_64-linux-gnu
           /usr/local/TensorRT/lib /usr/local/tensorrt/lib
           /opt/TensorRT/lib /opt/tensorrt/lib
+)
+
+find_path(TENSORRT_INCLUDE_DIR NvInfer.h
+    PATHS /usr/include /usr/local/include
+          /usr/include/x86_64-linux-gnu
+          /usr/local/TensorRT/include /usr/local/tensorrt/include
+          /opt/TensorRT/include /opt/tensorrt/include
 )
 
 if(TENSORRT_LIBRARY)
@@ -32,12 +40,18 @@ if(TENSORRT_LIBRARY)
         set_target_properties(TensorRT::nvinfer PROPERTIES
             IMPORTED_LOCATION "${TENSORRT_LIBRARY}"
         )
+        if(TENSORRT_INCLUDE_DIR)
+            set_target_properties(TensorRT::nvinfer PROPERTIES
+                INTERFACE_INCLUDE_DIRECTORIES "${TENSORRT_INCLUDE_DIR}"
+            )
+        endif()
         set(TENSORRT_AVAILABLE TRUE)
     endif()
     set(STEREO_DEPTH_SOURCES
         src/stereo_depth.cpp
         src/stereo_depth_libsgm.cpp
         src/stereo_depth_lightstereo.cpp
+        src/stereo_depth_fast_foundation_stereo.cu  # GWC volume kernel between two TRT engines
         src/stereo_depth_onnx.cpp
     )
 else()
@@ -105,10 +119,12 @@ target_include_directories(${PROJECT_NAME}
     PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>
-    ${onnxruntime_INCLUDE_DIR}
-    ${OpenCV_INCLUDE_DIRS}
-    ${CUBLAS_DIR}/include
+    $<BUILD_INTERFACE:${onnxruntime_INCLUDE_DIR}>
+    $<BUILD_INTERFACE:${OpenCV_INCLUDE_DIRS}>
 )
+if(CUBLAS_DIR AND NOT CUBLAS_DIR STREQUAL "OFF")
+    target_include_directories(${PROJECT_NAME} PUBLIC $<BUILD_INTERFACE:${CUBLAS_DIR}/include>)
+endif()
 
 add_subdirectory(scripts)
 add_subdirectory(tests)

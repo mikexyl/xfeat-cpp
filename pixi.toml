@@ -1,0 +1,71 @@
+[workspace]
+channels = ["conda-forge"]
+name = "xfeat-cpp"
+platforms = ["linux-64"]
+version = "0.1.0"
+
+[activation.env]
+# Point cmake to the downloaded ONNX Runtime GPU tarball
+ONNXRUNTIME_DIR = "$PIXI_PROJECT_ROOT/../onnxruntime-linux-x64-gpu-1.22.0"
+# Use system CUDA 12.9 (compatible with driver 575.57.08)
+CUDA_HOME = "/usr/local/cuda-12.9"
+PATH = "/usr/local/cuda-12.9/bin:$PATH"
+LD_LIBRARY_PATH = "$ONNXRUNTIME_DIR/lib:/usr/local/cuda-12.9/lib64:$LD_LIBRARY_PATH"
+
+[dependencies]
+# Packages not available system-wide
+faiss-gpu = ">=1.7"
+yaml-cpp = "*"
+# Python tools
+python = ">=3.10"
+pip = "*"
+
+[tasks]
+# Download ONNX Runtime 1.22.0 GPU tarball into the parent workspace directory
+download-onnxruntime = { cmd = "python scripts/download_onnxruntime.py" }
+
+configure = { cmd = "cmake --preset default", depends-on = ["download-onnxruntime"] }
+
+build = { cmd = "cmake --build --preset default -j$(nproc)", depends-on = ["configure"] }
+
+test = { cmd = "ctest --preset default --output-on-failure", depends-on = ["build"] }
+
+clean = { cmd = "rm -rf build" }
+
+rebuild = { depends-on = ["clean", "build"] }
+
+# --- Export environment: PyTorch + deps for ONNX export & TRT conversion ---
+[feature.export.system-requirements]
+cuda = "12.9"
+
+[feature.export.dependencies]
+python = ">=3.10,<3.13"
+pip = "*"
+pytorch = { version = ">=2.0,<2.7", build = "cuda*" }
+torchvision = "*"
+cuda-version = "12.*"
+numpy = "<2"
+omegaconf = "*"
+pyyaml = "*"
+scipy = "*"
+timm = "*"
+einops = "*"
+scikit-image = "*"
+opencv = "*"
+onnx = "*"
+onnxscript = "*"
+cuda-cudart-dev = "*"
+
+[feature.export.tasks]
+convert-ffs = { cmd = """python python/convert_fast_foundation_stereo_to_tensorrt.py \
+  --model_dir thirdparty/Fast-FoundationStereo/weights/weights/23-36-37/model_best_bp2_serialize.pth \
+  --save_path onnx_model/fast_foundation_stereo/ \
+  --height 448 --width 640 --valid_iters 8 --max_disp 192""" }
+convert-ffs-skip-onnx = { cmd = """python python/convert_fast_foundation_stereo_to_tensorrt.py \
+  --model_dir thirdparty/Fast-FoundationStereo/weights/weights/23-36-37/model_best_bp2_serialize.pth \
+  --save_path onnx_model/fast_foundation_stereo/ \
+  --height 448 --width 640 --valid_iters 8 --max_disp 192 --skip_onnx""" }
+
+[environments]
+default = { features = [], solve-group = "default" }
+export = { features = ["export"], solve-group = "export" }

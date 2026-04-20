@@ -10,7 +10,11 @@
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
         "CMAKE_EXPORT_COMPILE_COMMANDS": "YES",
-        "ONNXRUNTIME_ROOTDIR": "${sourceDir}/../onnxruntime-linux-x64-gpu-1.22.0"
+        "ONNXRUNTIME_ROOTDIR": "$env{ONNXRUNTIME_DIR}",
+        "CMAKE_CUDA_COMPILER": "$env{CUDA_HOME}/bin/nvcc",
+        "CMAKE_PREFIX_PATH": "$env{CONDA_PREFIX}",
+        "CMAKE_EXE_LINKER_FLAGS": "-L$env{CONDA_PREFIX}/lib -Wl,-rpath,$env{CONDA_PREFIX}/lib",
+        "CMAKE_SHARED_LINKER_FLAGS": "-L$env{CONDA_PREFIX}/lib -Wl,-rpath,$env{CONDA_PREFIX}/lib"
       }
     }
   ],

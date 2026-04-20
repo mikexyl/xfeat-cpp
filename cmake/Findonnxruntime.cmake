@@ -1,7 +1,17 @@
-option(onnxruntime_DIR "Path to ONNX Runtime root directory" "")
+# Accept ONNXRUNTIME_ROOTDIR (CMakePresets), onnxruntime_DIR, or ONNXRUNTIME_DIR env var
+if(NOT ONNXRUNTIME_ROOTDIR)
+    if(DEFINED ENV{ONNXRUNTIME_DIR})
+        set(ONNXRUNTIME_ROOTDIR "$ENV{ONNXRUNTIME_DIR}")
+    endif()
+endif()
 
-set(onnxruntime_INCLUDE_DIR ${onnxruntime_DIR}/include)
-set(onnxruntime_LIBRARY ${onnxruntime_DIR}/lib/libonnxruntime.so)
+# Normalize path to remove any '..' components that confuse cmake's install interface checks
+if(ONNXRUNTIME_ROOTDIR)
+    get_filename_component(ONNXRUNTIME_ROOTDIR "${ONNXRUNTIME_ROOTDIR}" REALPATH)
+endif()
+
+set(onnxruntime_INCLUDE_DIR ${ONNXRUNTIME_ROOTDIR}/include)
+set(onnxruntime_LIBRARY ${ONNXRUNTIME_ROOTDIR}/lib/libonnxruntime.so)
 
 # check if the ONNX Runtime library exists
 if(NOT EXISTS ${onnxruntime_LIBRARY})

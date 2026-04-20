@@ -2,7 +2,6 @@
 
 #include <cuda_runtime.h>
 #include <tbb/blocked_range.h>
-#include <tbb/mutex.h>
 #include <tbb/parallel_for.h>
 
 #include <iostream>

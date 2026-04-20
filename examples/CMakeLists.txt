@@ -4,7 +4,7 @@ if(POLICY CMP0167)
 endif()
 
 find_package(Boost REQUIRED COMPONENTS program_options)
-find_package(PCL REQUIRED COMPONENTS common io visualization filters)
+find_package(PCL REQUIRED COMPONENTS common io)
 
 add_executable(xfeat_example main.cpp)
 target_link_libraries(xfeat_example 
@@ -25,24 +25,16 @@ target_link_libraries(feature_nms_example
 
 install(TARGETS feature_nms_example DESTINATION bin)
 
-add_executable(stereo_depth_example stereo_depth_example.cpp)
-target_link_libraries(stereo_depth_example
+add_executable(stereo_example stereo_example.cpp)
+target_link_libraries(stereo_example
     PRIVATE
     ${PROJECT_NAME}
     Boost::program_options
     ${PCL_LIBRARIES}
 )
-target_include_directories(stereo_depth_example PRIVATE ${PCL_INCLUDE_DIRS})
-
-add_executable(onnx_stereo_depth_example onnx_stereo_depth_example.cpp)
-target_link_libraries(onnx_stereo_depth_example
-    PRIVATE
-    ${PROJECT_NAME}
-    ${PCL_LIBRARIES}
-)
-target_include_directories(onnx_stereo_depth_example PRIVATE ${PCL_INCLUDE_DIRS})
-
-install(TARGETS onnx_stereo_depth_example DESTINATION bin)
+target_include_directories(stereo_example PRIVATE ${PCL_INCLUDE_DIRS})
+target_compile_definitions(stereo_example PRIVATE ${PCL_DEFINITIONS})
+install(TARGETS stereo_example DESTINATION bin)
 
 add_executable(patchnetvlad_example patchnetvlad_example.cpp)
 target_link_libraries(patchnetvlad_example
