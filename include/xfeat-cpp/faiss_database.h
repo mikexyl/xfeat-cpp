@@ -2,10 +2,19 @@
 
 #include <faiss/Index.h>
 #include <faiss/IndexFlat.h>
-#include <faiss/IndexIDMap.h>
 #include <faiss/IndexIVF.h>
+#if __has_include(<faiss/IndexIDMap.h>)
+#include <faiss/IndexIDMap.h>
+#else
+#include <faiss/MetaIndexes.h>
+#endif
+#if __has_include(<faiss/gpu/GpuCloner.h>) && __has_include(<faiss/gpu/StandardGpuResources.h>)
 #include <faiss/gpu/GpuCloner.h>
 #include <faiss/gpu/StandardGpuResources.h>
+#define XFEAT_FAISS_HAS_GPU 1
+#else
+#define XFEAT_FAISS_HAS_GPU 0
+#endif
 #include <faiss/index_io.h>
 #include <faiss/utils/distances.h>
 
@@ -15,6 +24,12 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
+
+#if FAISS_VERSION_MAJOR == 1 && FAISS_VERSION_MINOR <= 7
+namespace faiss {
+using idx_t = Index::idx_t;
+}
+#endif
 
 namespace xfeat {
 
@@ -33,7 +48,7 @@ class FaissDatabase {
                          const std::string& index_path = {},
                          bool use_gpu = true,
                          int dim = 0)
-      : use_gpu_(use_gpu) {
+      : use_gpu_(use_gpu && XFEAT_FAISS_HAS_GPU) {
     if (mode == IndexMode::kIVFFlat) {
       // Always read the index on CPU first
       std::unique_ptr<faiss::Index> cpu_index(faiss::read_index(index_path.c_str()));
@@ -41,12 +56,14 @@ class FaissDatabase {
         throw std::runtime_error("Failed to load FAISS index from " + index_path);
       }
       if (use_gpu_) {
+#if XFEAT_FAISS_HAS_GPU
         // Move to GPU
         res_ = std::make_unique<faiss::gpu::StandardGpuResources>();
         res_->setTempMemory(0);
         faiss::gpu::GpuClonerOptions opts;
         opts.useFloat16 = true;
         index_.reset(faiss::gpu::index_cpu_to_gpu(res_.get(), 0, cpu_index.get(), &opts));
+#endif
       } else {
         // Keep on CPU
         index_ = std::move(cpu_index);
@@ -54,12 +71,14 @@ class FaissDatabase {
     } else if (mode == IndexMode::kFlat) {
       // Create a flat index with inner product (cosine similarity for normalized vectors)
       if (use_gpu_) {
+#if XFEAT_FAISS_HAS_GPU
         res_ = std::make_unique<faiss::gpu::StandardGpuResources>();
         res_->setTempMemory(0);
         faiss::IndexFlatIP* flat_index = new faiss::IndexFlatIP(dim);  // Inner product for cosine similarity
         faiss::gpu::GpuClonerOptions opts;
         opts.useFloat16 = true;
         index_.reset(faiss::gpu::index_cpu_to_gpu(res_.get(), 0, flat_index, &opts));
+#endif
       } else {
         faiss::IndexFlatIP* flat_index = new faiss::IndexFlatIP(dim);  // Inner product for cosine similarity
         index_.reset(flat_index);
@@ -109,12 +128,6 @@ class FaissDatabase {
       throw std::runtime_error("Query must be of type CV_32F");
     }
 
-    faiss::SearchParametersIVF search_params;
-    if (max_search_id >= 0) {
-      faiss::IDSelectorRange range_selector(0, max_search_id);
-      search_params.sel = &range_selector;
-    }
-
     // check query has only 1 channel
     CV_Assert(query.channels() == 1);
     CV_Assert(query.type() == CV_32F);
@@ -125,8 +138,18 @@ class FaissDatabase {
     }
 
     if (not use_gpu_) {
+#if FAISS_VERSION_MAJOR > 1 || (FAISS_VERSION_MAJOR == 1 && FAISS_VERSION_MINOR >= 8)
+      faiss::SearchParametersIVF search_params;
+      if (max_search_id >= 0) {
+        faiss::IDSelectorRange range_selector(0, max_search_id);
+        search_params.sel = &range_selector;
+      }
       // GPU variant: pass the search parameters (used by IVF)
       index_->search(1, query.ptr<float>(), k, distances.data(), indices.data(), &search_params);
+#else
+      (void)max_search_id;
+      index_->search(1, query.ptr<float>(), k, distances.data(), indices.data());
+#endif
     } else {
       // CPU variant: call the CPU overload (SearchParameters pointer isn't supported on CPU base)
       index_->search(1, query.ptr<float>(), k, distances.data(), indices.data());
@@ -136,9 +159,11 @@ class FaissDatabase {
   // Save the index to file
   void save(const std::string& path) const {
     if (use_gpu_) {
+#if XFEAT_FAISS_HAS_GPU
       // Move index back to CPU for saving
       std::unique_ptr<faiss::Index> cpu_index(faiss::gpu::index_gpu_to_cpu(index_.get()));
       faiss::write_index(cpu_index.get(), path.c_str());
+#endif
     } else {
       // Index is already on CPU
       faiss::write_index(index_.get(), path.c_str());
@@ -152,11 +177,17 @@ class FaissDatabase {
     return faiss::fvec_inner_product(a.ptr<float>(), b.ptr<float>(), a.cols);
   }
 
+  float l2_distance(const cv::Mat& a, const cv::Mat& b) const {
+    return faiss::fvec_L2sqr(a.ptr<float>(), b.ptr<float>(), a.cols);
+  }
+
   auto nTotal() const { return index_ ? index_->ntotal : 0; }
 
  private:
   std::unique_ptr<faiss::Index> index_;
+#if XFEAT_FAISS_HAS_GPU
   std::unique_ptr<faiss::gpu::StandardGpuResources> res_;
+#endif
   bool use_gpu_ = true;
   std::unordered_map<size_t, faiss::idx_t> id_to_index_map_;
 };

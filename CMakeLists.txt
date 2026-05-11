@@ -99,6 +99,8 @@ endif()
 add_subdirectory(include/xfeat-cpp/nms/anms)
 
 option(CUBLAS_DIR "Path to CUBLAS installation")
+option(XFEAT_BUILD_SCRIPTS "Build xfeat-cpp helper scripts" ON)
+option(XFEAT_BUILD_EXAMPLES "Build xfeat-cpp examples" ON)
 message(STATUS "CUBLAS_DIR: ${CUBLAS_DIR}")
 
 target_include_directories(${PROJECT_NAME}
@@ -110,8 +112,12 @@ target_include_directories(${PROJECT_NAME}
     ${CUBLAS_DIR}/include
 )
 
-add_subdirectory(scripts)
-add_subdirectory(tests)
+if(XFEAT_BUILD_SCRIPTS)
+    add_subdirectory(scripts)
+endif()
+if(BUILD_TESTING)
+    add_subdirectory(tests)
+endif()
 
 add_subdirectory(thirdparty/lightstereo/deploy/cpp)
 
@@ -150,7 +156,9 @@ add_subdirectory(thirdparty/libsgm)
 # Set POSITION_INDEPENDENT_CODE for libsgm after it's added
 set_target_properties(sgm PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
-add_subdirectory(examples)
+if(XFEAT_BUILD_EXAMPLES)
+    add_subdirectory(examples)
+endif()
 
 include(CMakePackageConfigHelpers)
 
