@@ -1,4 +1,4 @@
-#include "xfeat-cpp/stereo_depth_fast_foundation_stereo.h"
+#include "xfeat-cpp/stereo_depth/stereo_depth_fast_foundation_stereo.h"
 
 #ifdef HAVE_TENSORRT
 

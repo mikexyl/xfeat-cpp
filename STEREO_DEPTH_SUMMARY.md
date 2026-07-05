@@ -7,14 +7,14 @@ I've created a comprehensive stereo depth estimation framework with a base class
 ### Files Created
 
 **Header Files:**
-1. `/workspaces/src/xfeat-cpp/include/xfeat-cpp/stereo_depth.h` - Base class and OpenCV implementation
-2. `/workspaces/src/xfeat-cpp/include/xfeat-cpp/stereo_depth_libsgm.h` - LibSGM implementation
-3. `/workspaces/src/xfeat-cpp/include/xfeat-cpp/stereo_depth_lightstereo.h` - LightStereo deep learning implementation
+1. `/workspaces/src/xfeat-cpp/include/xfeat-cpp/stereo_depth/stereo_depth.h` - Base class and OpenCV implementation
+2. `/workspaces/src/xfeat-cpp/include/xfeat-cpp/stereo_depth/stereo_depth_libsgm.h` - LibSGM implementation
+3. `/workspaces/src/xfeat-cpp/include/xfeat-cpp/stereo_depth/stereo_depth_lightstereo.h` - LightStereo deep learning implementation
 
 **Implementation Files:**
-1. `/workspaces/src/xfeat-cpp/src/stereo_depth.cpp` - Base class and OpenCV implementation
-2. `/workspaces/src/xfeat-cpp/src/stereo_depth_libsgm.cpp` - LibSGM implementation  
-3. `/workspaces/src/xfeat-cpp/src/stereo_depth_lightstereo.cpp` - LightStereo implementation
+1. `/workspaces/src/xfeat-cpp/src/stereo_depth/stereo_depth.cpp` - Base class and OpenCV implementation
+2. `/workspaces/src/xfeat-cpp/src/stereo_depth/stereo_depth_libsgm.cpp` - LibSGM implementation  
+3. `/workspaces/src/xfeat-cpp/src/stereo_depth/stereo_depth_lightstereo.cpp` - LightStereo implementation
 
 **Example and Documentation:**
 1. `/workspaces/src/xfeat-cpp/examples/stereo_depth_example.cpp` - Complete usage example
@@ -138,9 +138,9 @@ To use these classes in your project:
 ```cmake
 # Add stereo depth library
 add_library(stereo_depth
-    src/stereo_depth.cpp
-    src/stereo_depth_libsgm.cpp
-    src/stereo_depth_lightstereo.cpp
+    src/stereo_depth/stereo_depth.cpp
+    src/stereo_depth/stereo_depth_libsgm.cpp
+    src/stereo_depth/stereo_depth_lightstereo.cpp
 )
 
 target_link_libraries(stereo_depth
@@ -167,7 +167,7 @@ make
 
 3. **Integrate into your application**:
 ```cpp
-#include "xfeat-cpp/stereo_depth.h"
+#include "xfeat-cpp/stereo_depth/stereo_depth.h"
 
 // Choose implementation based on your needs
 auto stereo = std::make_unique<OpenCVStereoDepth>();

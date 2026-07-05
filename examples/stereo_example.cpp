@@ -18,12 +18,12 @@
  *   --baseline B            stereo baseline in metres (default 0.54)
  */
 
-#include "xfeat-cpp/stereo_depth.h"
-#include "xfeat-cpp/stereo_depth_libsgm.h"
-#include "xfeat-cpp/stereo_depth_onnx.h"
+#include "xfeat-cpp/stereo_depth/stereo_depth.h"
+#include "xfeat-cpp/stereo_depth/stereo_depth_libsgm.h"
+#include "xfeat-cpp/stereo_depth/stereo_depth_onnx.h"
 #ifdef HAVE_TENSORRT
-#include "xfeat-cpp/stereo_depth_lightstereo.h"
-#include "xfeat-cpp/stereo_depth_fast_foundation_stereo.h"
+#include "xfeat-cpp/stereo_depth/stereo_depth_lightstereo.h"
+#include "xfeat-cpp/stereo_depth/stereo_depth_fast_foundation_stereo.h"
 #endif
 
 #include <boost/program_options.hpp>

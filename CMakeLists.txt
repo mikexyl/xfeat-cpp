@@ -48,19 +48,19 @@ if(TENSORRT_LIBRARY)
         set(TENSORRT_AVAILABLE TRUE)
     endif()
     set(STEREO_DEPTH_SOURCES
-        src/stereo_depth.cpp
-        src/stereo_depth_libsgm.cpp
-        src/stereo_depth_lightstereo.cpp
-        src/stereo_depth_fast_foundation_stereo.cu  # GWC volume kernel between two TRT engines
-        src/stereo_depth_onnx.cpp
+        src/stereo_depth/stereo_depth.cpp
+        src/stereo_depth/stereo_depth_libsgm.cpp
+        src/stereo_depth/stereo_depth_lightstereo.cpp
+        src/stereo_depth/stereo_depth_fast_foundation_stereo.cu  # GWC volume kernel between two TRT engines
+        src/stereo_depth/stereo_depth_onnx.cpp
     )
 else()
     message(STATUS "TensorRT not found - LightStereo depth will not be available")
     set(TENSORRT_AVAILABLE FALSE)
     set(STEREO_DEPTH_SOURCES
-        src/stereo_depth.cpp
-        src/stereo_depth_libsgm.cpp
-        src/stereo_depth_onnx.cpp
+        src/stereo_depth/stereo_depth.cpp
+        src/stereo_depth/stereo_depth_libsgm.cpp
+        src/stereo_depth/stereo_depth_onnx.cpp
     )
 endif()
 

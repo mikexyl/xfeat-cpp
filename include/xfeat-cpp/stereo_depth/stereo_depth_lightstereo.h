@@ -3,7 +3,7 @@
 // LightStereo requires TensorRT
 #ifdef HAVE_TENSORRT
 
-#include "xfeat-cpp/stereo_depth.h"
+#include "xfeat-cpp/stereo_depth/stereo_depth.h"
 #include <opencv2/core.hpp>
 #include <string>
 #include <memory>

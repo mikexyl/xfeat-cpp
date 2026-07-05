@@ -63,7 +63,7 @@ Uses OpenCV's built-in stereo matching algorithms.
 
 **Example:**
 ```cpp
-#include "xfeat-cpp/stereo_depth.h"
+#include "xfeat-cpp/stereo_depth/stereo_depth.h"
 
 OpenCVStereoDepth::Params params;
 params.algorithm = OpenCVStereoDepth::Algorithm::SGBM;
@@ -105,7 +105,7 @@ GPU-accelerated Semi-Global Matching using the LibSGM library.
 
 **Example:**
 ```cpp
-#include "xfeat-cpp/stereo_depth_libsgm.h"
+#include "xfeat-cpp/stereo_depth/stereo_depth_libsgm.h"
 
 LibSGMStereoDepth::Params params;
 params.num_disparities = 128;
@@ -158,7 +158,7 @@ Deep learning-based stereo depth estimation using TensorRT.
 
 **Example:**
 ```cpp
-#include "xfeat-cpp/stereo_depth_lightstereo.h"
+#include "xfeat-cpp/stereo_depth/stereo_depth_lightstereo.h"
 
 LightStereoDepth::Params params;
 params.engine_path = "lightstereo.trt";

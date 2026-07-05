@@ -1,4 +1,4 @@
-#include "xfeat-cpp/stereo_depth_libsgm.h"
+#include "xfeat-cpp/stereo_depth/stereo_depth_libsgm.h"
 #include <stdexcept>
 #include <opencv2/imgproc.hpp>
 
