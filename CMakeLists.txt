@@ -14,7 +14,7 @@ find_package(faiss REQUIRED)
 find_package(CUDAToolkit REQUIRED)
 find_package(OpenMP REQUIRED)
 
-# Try to find TensorRT (optional for LightStereo)
+# Try to find TensorRT (optional for TensorRT-backed depth modules)
 find_library(TENSORRT_LIBRARY nvinfer
     PATHS /usr/local/lib /usr/lib
           /usr/lib/x86_64-linux-gnu
@@ -54,14 +54,18 @@ if(TENSORRT_LIBRARY)
         src/stereo_depth/stereo_depth_fast_foundation_stereo.cu  # GWC volume kernel between two TRT engines
         src/stereo_depth/stereo_depth_onnx.cpp
     )
+    set(MONO_DEPTH_SOURCES
+        src/mono_depth/depth_anything_v3_trt.cpp
+    )
 else()
-    message(STATUS "TensorRT not found - LightStereo depth will not be available")
+    message(STATUS "TensorRT not found - TensorRT depth modules will not be available")
     set(TENSORRT_AVAILABLE FALSE)
     set(STEREO_DEPTH_SOURCES
         src/stereo_depth/stereo_depth.cpp
         src/stereo_depth/stereo_depth_libsgm.cpp
         src/stereo_depth/stereo_depth_onnx.cpp
     )
+    set(MONO_DEPTH_SOURCES)
 endif()
 
 set(CMAKE_CUDA_ARCHITECTURES 89)
@@ -80,6 +84,7 @@ add_library(${PROJECT_NAME} STATIC
     src/place_recognition/mixvpr_onnx.cpp
     src/segmentation/skyseg_trt.cpp
     ${STEREO_DEPTH_SOURCES}
+    ${MONO_DEPTH_SOURCES}
 )
 
 set_target_properties(${PROJECT_NAME} PROPERTIES POSITION_INDEPENDENT_CODE ON)
@@ -126,6 +131,7 @@ if(CUBLAS_DIR AND NOT CUBLAS_DIR STREQUAL "OFF")
     target_include_directories(${PROJECT_NAME} PUBLIC $<BUILD_INTERFACE:${CUBLAS_DIR}/include>)
 endif()
 
+enable_testing()
 add_subdirectory(scripts)
 add_subdirectory(tests)
 

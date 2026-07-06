@@ -4,7 +4,7 @@ if(POLICY CMP0167)
 endif()
 
 find_package(Boost REQUIRED COMPONENTS program_options)
-find_package(PCL REQUIRED COMPONENTS common io)
+find_package(PCL REQUIRED COMPONENTS common filters io)
 
 add_executable(xfeat_example main.cpp)
 target_link_libraries(xfeat_example 
@@ -63,3 +63,48 @@ install(TARGETS vpr_example DESTINATION bin)
 # Example executable
 add_executable(skyseg_example skyseg_example.cpp)
 target_link_libraries(skyseg_example xfeat-cpp ${OpenCV_LIBS} nvinfer cudart)
+
+if(TENSORRT_AVAILABLE)
+    add_executable(mono_depth_example mono_depth_example.cpp)
+    target_link_libraries(mono_depth_example
+        PRIVATE
+        ${PROJECT_NAME}
+        Boost::program_options
+        TensorRT::nvinfer
+        CUDA::cudart
+    )
+    install(TARGETS mono_depth_example DESTINATION bin)
+
+    add_executable(mono_depth_multiview_sequence_example mono_depth_multiview_sequence_example.cpp)
+    target_link_libraries(mono_depth_multiview_sequence_example
+        PRIVATE
+        ${PROJECT_NAME}
+        Boost::program_options
+        TensorRT::nvinfer
+        CUDA::cudart
+    )
+    install(TARGETS mono_depth_multiview_sequence_example DESTINATION bin)
+
+    add_executable(mono_depth_benchmark mono_depth_benchmark.cpp)
+    target_link_libraries(mono_depth_benchmark
+        PRIVATE
+        ${PROJECT_NAME}
+        Boost::program_options
+        TensorRT::nvinfer
+        CUDA::cudart
+    )
+    install(TARGETS mono_depth_benchmark DESTINATION bin)
+
+    add_executable(mono_depth_pose_map_example mono_depth_pose_map_example.cpp)
+    target_link_libraries(mono_depth_pose_map_example
+        PRIVATE
+        ${PROJECT_NAME}
+        Boost::program_options
+        ${PCL_LIBRARIES}
+        TensorRT::nvinfer
+        CUDA::cudart
+    )
+    target_include_directories(mono_depth_pose_map_example PRIVATE ${PCL_INCLUDE_DIRS})
+    target_compile_definitions(mono_depth_pose_map_example PRIVATE ${PCL_DEFINITIONS})
+    install(TARGETS mono_depth_pose_map_example DESTINATION bin)
+endif()
