@@ -1,4 +1,4 @@
-#include "xfeat-cpp/stereo_depth_lightstereo.h"
+#include "xfeat-cpp/stereo_depth/stereo_depth_lightstereo.h"
 
 // Only compile if TensorRT is available
 #ifdef HAVE_TENSORRT

@@ -1,4 +1,4 @@
-#include "xfeat-cpp/stereo_depth_onnx.h"
+#include "xfeat-cpp/stereo_depth/stereo_depth_onnx.h"
 
 #include <algorithm>
 #include <iostream>

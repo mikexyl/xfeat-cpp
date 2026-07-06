@@ -7,3 +7,6 @@
 [submodule "thirdparty/lightstereo"]
 	path = thirdparty/lightstereo
 	url = git@github.com:XiandaGuo/OpenStereo.git
+[submodule "thirdparty/Fast-FoundationStereo"]
+	path = thirdparty/Fast-FoundationStereo
+	url = https://github.com/NVlabs/Fast-FoundationStereo

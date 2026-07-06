@@ -3,7 +3,7 @@
 ## Quick Start
 
 ```cpp
-#include "xfeat-cpp/stereo_depth.h"
+#include "xfeat-cpp/stereo_depth/stereo_depth.h"
 
 // Create stereo depth estimator
 OpenCVStereoDepth::Params params;
@@ -103,7 +103,7 @@ stereo->warmup(cv::Size(1280, 720));
 ## Example: Complete Pipeline
 
 ```cpp
-#include "xfeat-cpp/stereo_depth.h"
+#include "xfeat-cpp/stereo_depth/stereo_depth.h"
 #include <opencv2/opencv.hpp>
 
 int main() {

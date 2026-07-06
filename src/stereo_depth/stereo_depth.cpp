@@ -1,4 +1,4 @@
-#include "xfeat-cpp/stereo_depth.h"
+#include "xfeat-cpp/stereo_depth/stereo_depth.h"
 #include <opencv2/calib3d.hpp>
 #include <opencv2/imgproc.hpp>
 #include <stdexcept>

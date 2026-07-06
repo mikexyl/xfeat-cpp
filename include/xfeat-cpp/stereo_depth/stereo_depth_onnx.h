@@ -1,6 +1,6 @@
 #pragma once
 
-#include "xfeat-cpp/stereo_depth.h"
+#include "xfeat-cpp/stereo_depth/stereo_depth.h"
 #include <opencv2/core.hpp>
 #include <onnxruntime_cxx_api.h>
 #include <string>
