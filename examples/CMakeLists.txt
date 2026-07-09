@@ -4,6 +4,7 @@ if(POLICY CMP0167)
 endif()
 
 find_package(Boost REQUIRED COMPONENTS program_options)
+find_package(Eigen3 REQUIRED)
 find_package(PCL REQUIRED COMPONENTS common filters io)
 
 add_executable(xfeat_example main.cpp)
@@ -80,9 +81,11 @@ if(TENSORRT_AVAILABLE)
         PRIVATE
         ${PROJECT_NAME}
         Boost::program_options
+        Eigen3::Eigen
         TensorRT::nvinfer
         CUDA::cudart
     )
+    target_include_directories(mono_depth_multiview_sequence_example PRIVATE ${Eigen3_INCLUDE_DIR})
     install(TARGETS mono_depth_multiview_sequence_example DESTINATION bin)
 
     add_executable(mono_depth_benchmark mono_depth_benchmark.cpp)
@@ -90,9 +93,11 @@ if(TENSORRT_AVAILABLE)
         PRIVATE
         ${PROJECT_NAME}
         Boost::program_options
+        Eigen3::Eigen
         TensorRT::nvinfer
         CUDA::cudart
     )
+    target_include_directories(mono_depth_benchmark PRIVATE ${Eigen3_INCLUDE_DIR})
     install(TARGETS mono_depth_benchmark DESTINATION bin)
 
     add_executable(mono_depth_pose_map_example mono_depth_pose_map_example.cpp)

@@ -36,7 +36,12 @@ class DepthAnythingV3TRT : public MonoDepth {
   std::vector<MonoDepthResult> infer_multi_view(const std::vector<cv::Mat>& views,
                                                 const std::vector<CameraIntrinsics>& intrinsics = {}) override;
 
+  std::vector<MonoDepthResult> infer_multi_view(const std::vector<cv::Mat>& views,
+                                                const std::vector<CameraIntrinsics>& intrinsics,
+                                                const std::vector<cv::Matx44f>& world_to_camera_extrinsics);
+
   cv::Size input_size() const;
+  bool has_camera_inputs() const;
   const Params& params() const;
 
  private:

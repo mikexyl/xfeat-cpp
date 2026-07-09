@@ -236,6 +236,25 @@ cv::Mat renderPointCloudPreview(const std::vector<CloudPoint>& points,
   return dilated;
 }
 
+void writeIntrinsics(const fs::path& path, const xfeat::CameraIntrinsics& intrinsics, bool approximate) {
+  cv::Mat K =
+      (cv::Mat_<double>(3, 3) << intrinsics.fx, 0.0, intrinsics.cx, 0.0, intrinsics.fy, intrinsics.cy, 0.0, 0.0, 1.0);
+
+  cv::FileStorage storage(path.string(), cv::FileStorage::WRITE);
+  if (!storage.isOpened()) {
+    throw std::runtime_error("Failed to write intrinsics: " + path.string());
+  }
+  storage << "width" << intrinsics.width;
+  storage << "height" << intrinsics.height;
+  storage << "fx" << intrinsics.fx;
+  storage << "fy" << intrinsics.fy;
+  storage << "cx" << intrinsics.cx;
+  storage << "cy" << intrinsics.cy;
+  storage << "K" << K;
+  storage << "approximate" << static_cast<int>(approximate);
+  storage.release();
+}
+
 void writePointCloudOutputs(const fs::path& out_dir,
                             const std::string& prefix,
                             const cv::Mat& image,
@@ -248,6 +267,7 @@ void writePointCloudOutputs(const fs::path& out_dir,
 
   bool approximated_intrinsics = false;
   const auto cloud_intrinsics = intrinsicsForPointCloud(image.size(), intrinsics, &approximated_intrinsics);
+  writeIntrinsics(out_dir / (prefix + "_intrinsics.yml"), cloud_intrinsics, approximated_intrinsics);
   const auto points = depthToPointCloud(image, result.depth, result.sky_mask, cloud_intrinsics, options);
   if (points.empty()) {
     std::cerr << "Skipping point cloud for " << prefix << ": no valid depth samples" << std::endl;
@@ -267,6 +287,15 @@ void writePointCloudOutputs(const fs::path& out_dir,
   std::cout << "  point_cloud_preview=" << preview_path << std::endl;
 }
 
+void writeFloatImage(const fs::path& path, const cv::Mat& image, const std::string& label) {
+  if (image.empty()) {
+    return;
+  }
+  if (!cv::imwrite(path.string(), image)) {
+    throw std::runtime_error("Failed to write " + label + ": " + path.string());
+  }
+}
+
 void writeResult(const fs::path& out_dir,
                  const fs::path& image_path,
                  int index,
@@ -276,13 +305,16 @@ void writeResult(const fs::path& out_dir,
                  const PointCloudOptions& cloud_options) {
   const std::string prefix = outputPrefix(image_path, index);
 
-  const fs::path yml_path = out_dir / (prefix + "_depth.yml");
-  cv::FileStorage storage(yml_path.string(), cv::FileStorage::WRITE);
-  storage << "depth" << result.depth;
-  storage << "raw_depth" << result.raw_depth;
+  writeFloatImage(out_dir / (prefix + "_depth.tiff"), result.depth, "depth image");
+  writeFloatImage(out_dir / (prefix + "_raw_depth.tiff"), result.raw_depth, "raw depth image");
+
+  cv::FileStorage storage((out_dir / (prefix + "_metadata.yml")).string(), cv::FileStorage::WRITE);
   storage << "focal_scale" << result.metadata.focal_scale;
   storage << "sky_fill_value" << result.metadata.sky_fill_value;
   storage.release();
+  if (!cloud_options.enabled && intrinsics.has_value()) {
+    writeIntrinsics(out_dir / (prefix + "_intrinsics.yml"), *intrinsics, false);
+  }
 
   cv::imwrite((out_dir / (prefix + "_depth_vis.png")).string(), colorizeDepth(result.depth));
   if (!result.sky_mask.empty()) {
