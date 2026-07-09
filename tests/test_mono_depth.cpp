@@ -2,12 +2,14 @@
 
 #include <cstdlib>
 #include <limits>
+#include <numeric>
 #include <opencv2/imgcodecs.hpp>
 #include <optional>
 #include <string>
 #include <vector>
 
 #include "xfeat-cpp/mono_depth/detail/depth_anything_v3_postprocess.h"
+#include "xfeat-cpp/mono_depth/detail/depth_anything_v3_tensor.h"
 
 #ifdef HAVE_TENSORRT
 #include "xfeat-cpp/mono_depth/depth_anything_v3_trt.h"
@@ -15,6 +17,20 @@
 
 namespace {
 namespace detail = xfeat::mono_depth_detail;
+
+std::vector<float> sequenceValues(size_t count) {
+  std::vector<float> values(count);
+  std::iota(values.begin(), values.end(), 0.0f);
+  return values;
+}
+
+void expectPlaneStartsAt(const cv::Mat& plane, int height, int width, float first_value) {
+  ASSERT_EQ(plane.type(), CV_32FC1);
+  ASSERT_EQ(plane.rows, height);
+  ASSERT_EQ(plane.cols, width);
+  EXPECT_FLOAT_EQ(plane.at<float>(0, 0), first_value);
+  EXPECT_FLOAT_EQ(plane.at<float>(height - 1, width - 1), first_value + static_cast<float>(height * width - 1));
+}
 
 TEST(MonoDepthPostprocess, ComputesFocalScaleAtModelResolution) {
   xfeat::CameraIntrinsics intrinsics;
@@ -76,6 +92,53 @@ TEST(MonoDepthPostprocess, PostprocessResizesAndReturnsOriginalSkyMask) {
   EXPECT_EQ(output.sky_mask.size(), options.original_size);
   EXPECT_EQ(output.model_sky_mask.at<uint8_t>(0, 0), 255);
   EXPECT_FALSE(output.raw_depth.empty());
+}
+
+TEST(MonoDepthTensorShapes, ExtractsViewHeightWidthOutput) {
+  const auto planes = detail::extractDepthAnythingTensorPlanes(sequenceValues(3 * 2 * 4), {3, 2, 4}, 3, "depth");
+
+  ASSERT_EQ(planes.size(), 3u);
+  expectPlaneStartsAt(planes[0], 2, 4, 0.0f);
+  expectPlaneStartsAt(planes[1], 2, 4, 8.0f);
+  expectPlaneStartsAt(planes[2], 2, 4, 16.0f);
+}
+
+TEST(MonoDepthTensorShapes, ExtractsViewChannelHeightWidthOutput) {
+  const auto planes = detail::extractDepthAnythingTensorPlanes(sequenceValues(3 * 1 * 2 * 4), {3, 1, 2, 4}, 3, "depth");
+
+  ASSERT_EQ(planes.size(), 3u);
+  expectPlaneStartsAt(planes[0], 2, 4, 0.0f);
+  expectPlaneStartsAt(planes[1], 2, 4, 8.0f);
+  expectPlaneStartsAt(planes[2], 2, 4, 16.0f);
+}
+
+TEST(MonoDepthTensorShapes, ExtractsBatchViewChannelHeightWidthOutput) {
+  const auto planes =
+      detail::extractDepthAnythingTensorPlanes(sequenceValues(1 * 3 * 1 * 2 * 4), {1, 3, 1, 2, 4}, 3, "depth");
+
+  ASSERT_EQ(planes.size(), 3u);
+  expectPlaneStartsAt(planes[0], 2, 4, 0.0f);
+  expectPlaneStartsAt(planes[1], 2, 4, 8.0f);
+  expectPlaneStartsAt(planes[2], 2, 4, 16.0f);
+}
+
+TEST(MonoDepthTensorShapes, ExtractsBatchViewHeightWidthOutput) {
+  const auto planes = detail::extractDepthAnythingTensorPlanes(sequenceValues(1 * 3 * 2 * 4), {1, 3, 2, 4}, 3, "depth");
+
+  ASSERT_EQ(planes.size(), 3u);
+  expectPlaneStartsAt(planes[0], 2, 4, 0.0f);
+  expectPlaneStartsAt(planes[1], 2, 4, 8.0f);
+  expectPlaneStartsAt(planes[2], 2, 4, 16.0f);
+}
+
+TEST(MonoDepthTensorShapes, ExtractsBatchViewHeightWidthChannelOutput) {
+  const auto planes =
+      detail::extractDepthAnythingTensorPlanes(sequenceValues(1 * 3 * 2 * 4 * 1), {1, 3, 2, 4, 1}, 3, "depth");
+
+  ASSERT_EQ(planes.size(), 3u);
+  expectPlaneStartsAt(planes[0], 2, 4, 0.0f);
+  expectPlaneStartsAt(planes[1], 2, 4, 8.0f);
+  expectPlaneStartsAt(planes[2], 2, 4, 16.0f);
 }
 
 TEST(DepthAnythingV3TRT, SmokeRunsOnlyWhenEngineIsProvided) {

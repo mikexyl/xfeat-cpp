@@ -63,7 +63,17 @@ std::vector<cv::Mat> views = {front, left, right, rear};
 std::vector<xfeat::MonoDepthResult> results = depth.infer_multi_view(views);
 ```
 
-No pose tensors are part of this v1 API. Engines with extra inputs are rejected.
+Pose-conditioned DA3 engines expose `input_extrinsics` and `input_intrinsics`. The base `MonoDepth` API stays image-only,
+but `DepthAnythingV3TRT` has a class-specific overload for calibrated multi-view calls:
+
+```cpp
+std::vector<xfeat::CameraIntrinsics> intrinsics = {k0, k1, k2};
+std::vector<cv::Matx44f> world_to_camera = {T_c0_w, T_c1_w, T_c2_w};
+std::vector<xfeat::MonoDepthResult> results = depth.infer_multi_view(views, intrinsics, world_to_camera);
+```
+
+The runtime scales intrinsics to the resized model image before inference. For pose-conditioned engines, it also reads
+DA3's predicted extrinsics output and applies a pose-scale depth correction against the input extrinsics.
 
 ## Example CLI
 
@@ -101,13 +111,44 @@ build/examples/mono_depth_multiview_sequence_example \
 This example writes `selected_views.txt`, per-view depth/mask outputs, and `multiview_summary.png`.
 The engine must accept the requested view count, either as a fixed `[5, 3, H, W]` engine or as a dynamic-view engine built with `--dynamic-views --min-views 1 --opt-views 5 --max-views 5`.
 
-The example writes `*_depth.yml` with float depth and raw model output, `*_depth_vis.png`, and `*_sky_mask.png` when the engine exposes a sky output.
+For fixed three-view pose-conditioned DA3 engines:
+
+```bash
+build/examples/mono_depth_multiview_sequence_example \
+  --engine onnx_model/mono_depth/depth_anything_v3/DA3-SMALL_pose_v3_350x504_fp16.engine \
+  --sequence-dir /data/graco/ground-03_images/camera_left_image_raw \
+  --poses /data/graco/ground-03.txt \
+  --views 3 --interval 10 --seed 1 \
+  --fx 940.862825677534 --fy 938.554923506332 \
+  --cx 799.1626975233576 --cy 559.295406893583 \
+  --t-body-camera "0.99985436,-0.00116148,-0.01702670,-0.11655291,\
+0.01702167,-0.00421530,0.99984624,0.01614558,\
+-0.00123307,-0.99999044,-0.00419492,0.07950961,\
+0,0,0,1" \
+  --min-confidence 1.0 \
+  --out-dir output/mono_depth_graco_ground03_pose_conditioned_da3_small_v3_t_imu_cam0_conf1
+```
+
+When the engine has camera inputs, this example feeds calibrated intrinsics plus per-frame world-to-camera extrinsics
+from `--poses`. For GRACO ground sequences, `--poses` is an IMU/body trajectory, so `--t-body-camera` should be
+`T_Imu_cam0` from `/data/graco/ground-calibration/stereo-imu.yaml` for left-camera images. It still writes per-frame
+camera clouds and one fused `map_points.ply`.
+
+The example writes `*_depth.tiff` and `*_raw_depth.tiff` as OpenCV-readable `CV_32FC1` float images. Read them with `cv::imread(path, cv::IMREAD_UNCHANGED)`. It also writes `*_depth_vis.png`, `*_metadata.yml`, `*_intrinsics.yml`, and `*_sky_mask.png` when the engine exposes a sky output. `*_intrinsics.yml` contains `fx`, `fy`, `cx`, `cy`, `width`, `height`, and the 3x3 `K` matrix needed to backproject the depth image.
 It also writes a colored point cloud by default:
 
 ```text
 *_cloud.ply
 *_cloud_preview.png
 ```
+
+The grouped-view sequence example writes each view under `point_clouds/<view_prefix>/` so `depth.tiff`, `raw_depth.tiff`,
+`confidence.tiff`, `raw_confidence.tiff`, `confidence_vis.png`, `raw_confidence_vis.png`,
+`confidence_filter_mask.png`, `raw_confidence_filter_mask.png`, `intrinsics.yml`, and any generated
+`points_camera.ply` for that view live in the same directory. Confidence TIFFs, visualizations, and filter masks are
+present only when the engine exposes a confidence output such as `depth_conf`. The confidence visualization uses a fixed
+0 to 4 colorbar so threshold values can be compared across frames. In the filter masks, white pixels pass
+`--min-confidence` and black pixels are rejected by the confidence threshold.
 
 Point cloud options:
 
@@ -116,6 +157,7 @@ Point cloud options:
 --cloud-stride 4           sample every N pixels
 --cloud-max-depth 200      discard farther depth values
 --cloud-include-sky        keep sky-mask pixels in the point cloud
+--min-confidence VALUE     drop points below this absolute confidence value; 0 disables confidence filtering
 ```
 
 When `--fx/--fy` are provided, the cloud uses those intrinsics. Without intrinsics, the preview and PLY use an approximate focal length based on the image size.
@@ -139,6 +181,14 @@ build/examples/mono_depth_pose_map_example \
 ```
 
 This demo samples a nearby strided image window, runs DA3 metric depth per image, backprojects colored points with the camera intrinsics, transforms each local cloud by `T_world_body * T_body_camera`, and writes `map_points.ply`. Poses are read as `timestamp tx ty tz qx qy qz qw` and interpreted as body-to-world by default. Pass `--poses-are-world-to-body` to invert them. The implementation uses PCL point clouds, `pcl::transformPointCloud`, and binary PLY output.
+
+When `mono_depth_pose_map_example` is given a pose-conditioned multi-view DA3 engine, it runs selected frames in grouped
+multi-view batches instead of single-image inference. Use `--multi-view-size 3` for the fixed three-view BASE/SMALL/LARGE
+pose engines and `--min-confidence VALUE` to filter low-confidence DA3 points when `depth_conf` is available.
+Add `--save-component-clouds` to write ICP-ready component outputs under `component_clouds/`: each
+`*_points_camera.ply` is in that frame's camera coordinates, `poses_tum.txt` contains matching `T_world_camera` poses,
+`poses_matrices.txt` contains row-major 4x4 `T_world_camera` matrices, and `component_index.tsv` maps clouds back to
+image paths.
 
 Full `ground-03` map with one image every 10 meters of GT path length:
 
@@ -207,9 +257,13 @@ Expected input is BGR `CV_8UC3` from OpenCV. The runtime converts to RGB, resize
 Common DA3 TensorRT model shape:
 
 ```text
-input: [1, 3, 280, 504] or grouped [V, 3, H, W] / [1, V, 3, H, W]
-depth: [V, 1, H, W] or [1, V, 1, H, W]
-sky:   optional, same spatial shape as depth
+images:           [1, 3, 280, 504] or grouped [V, 3, H, W] / [1, V, 3, H, W]
+input_extrinsics: optional [1, V, 4, 4]
+input_intrinsics: optional [1, V, 3, 3]
+depth:            [V, 1, H, W] or [1, V, 1, H, W]
+depth_conf:       optional [V, H, W] or [1, V, H, W]
+extrinsics:       optional [1, V, 3, 4]
+sky:              optional, same spatial shape as depth
 ```
 
 The runtime prefers output tensor names containing `depth` and `sky`. If no sky output exists, sky handling is skipped and `MonoDepthResult::sky_mask` is empty.
@@ -219,6 +273,8 @@ Depth postprocessing:
 - raw depth is converted to `CV_32FC1`
 - negative, NaN, and infinite values are clamped to zero
 - when intrinsics are provided, metric depth is scaled by `((fx * scale_x + fy * scale_y) / 2) / 300`
+- when pose inputs and predicted extrinsics are present, depth is additionally divided by the estimated input-to-predicted pose scale
+- when `depth_conf` is present, point-cloud examples can filter low-confidence points without changing the depth TIFFs
 - sky pixels are `sky > sky_threshold`
 - sky pixels are filled with `min(99th_percentile(non_sky_depth), sky_depth_cap)`
 - final depth and sky mask are resized to the input image size

@@ -451,21 +451,36 @@ Eigen::Matrix4f parseTransform(const std::string& text, const std::string& optio
   return transform;
 }
 
-size_t appendTransformedCloud(const cv::Mat& image_bgr,
-                              const xfeat::MonoDepthResult& result,
-                              const xfeat::CameraIntrinsics& intrinsics,
-                              const Pose& pose,
-                              bool pose_is_world_to_body,
-                              const Eigen::Matrix4f& body_from_camera,
-                              int stride,
-                              float max_depth,
-                              bool include_sky,
-                              MapCloud* map_cloud) {
+cv::Matx44f toCvMatx44f(const Eigen::Matrix4f& matrix) {
+  cv::Matx44f out;
+  for (int r = 0; r < 4; ++r) {
+    for (int c = 0; c < 4; ++c) {
+      out(r, c) = matrix(r, c);
+    }
+  }
+  return out;
+}
+
+Eigen::Matrix4f worldFromCamera(const Pose& pose, bool pose_is_world_to_body, const Eigen::Matrix4f& body_from_camera) {
+  return poseToTransform(pose, pose_is_world_to_body) * body_from_camera;
+}
+
+MapCloud makeCameraCloud(const cv::Mat& image_bgr,
+                         const xfeat::MonoDepthResult& result,
+                         const xfeat::CameraIntrinsics& intrinsics,
+                         int stride,
+                         float max_depth,
+                         float min_confidence,
+                         bool include_sky) {
   if (image_bgr.empty() || result.depth.empty()) {
-    return 0;
+    return {};
   }
   if (image_bgr.type() != CV_8UC3 || result.depth.type() != CV_32FC1 || image_bgr.size() != result.depth.size()) {
     throw std::runtime_error("Depth/image shape mismatch while building map point cloud");
+  }
+  if (!result.confidence.empty() &&
+      (result.confidence.type() != CV_32FC1 || result.confidence.size() != result.depth.size())) {
+    throw std::runtime_error("Depth confidence map must be CV_32FC1 and match depth size");
   }
 
   MapCloud local_cloud;
@@ -475,6 +490,7 @@ size_t appendTransformedCloud(const cv::Mat& image_bgr,
 
   for (int v = 0; v < result.depth.rows; v += stride) {
     const float* depth_row = result.depth.ptr<float>(v);
+    const float* confidence_row = result.confidence.empty() ? nullptr : result.confidence.ptr<float>(v);
     const cv::Vec3b* color_row = image_bgr.ptr<cv::Vec3b>(v);
     const uint8_t* sky_row = result.sky_mask.empty() ? nullptr : result.sky_mask.ptr<uint8_t>(v);
     for (int u = 0; u < result.depth.cols; u += stride) {
@@ -484,6 +500,12 @@ size_t appendTransformedCloud(const cv::Mat& image_bgr,
       }
       if (!include_sky && sky_row != nullptr && sky_row[u] != 0) {
         continue;
+      }
+      if (min_confidence > 0.0f && confidence_row != nullptr) {
+        const float confidence = confidence_row[u];
+        if (!std::isfinite(confidence) || confidence < min_confidence) {
+          continue;
+        }
       }
 
       const cv::Vec3b bgr = color_row[u];
@@ -501,10 +523,18 @@ size_t appendTransformedCloud(const cv::Mat& image_bgr,
 
   local_cloud.width = static_cast<uint32_t>(local_cloud.points.size());
   local_cloud.height = 1;
+  local_cloud.is_dense = false;
+  return local_cloud;
+}
 
+size_t appendCameraCloudToMap(const MapCloud& local_cloud,
+                              const Eigen::Matrix4f& world_from_camera,
+                              MapCloud* map_cloud) {
+  if (local_cloud.points.empty()) {
+    return 0;
+  }
   MapCloud transformed_cloud;
-  const Eigen::Matrix4f world_from_body = poseToTransform(pose, pose_is_world_to_body);
-  pcl::transformPointCloud(local_cloud, transformed_cloud, world_from_body * body_from_camera);
+  pcl::transformPointCloud(local_cloud, transformed_cloud, world_from_camera);
   *map_cloud += transformed_cloud;
   map_cloud->width = static_cast<uint32_t>(map_cloud->points.size());
   map_cloud->height = 1;
@@ -545,6 +575,48 @@ void writeBinaryPly(const fs::path& path, const MapCloud& cloud) {
   if (pcl::io::savePLYFileBinary(path.string(), cloud) < 0) {
     throw std::runtime_error("Failed to write map output: " + path.string());
   }
+}
+
+void writeComponentPose(size_t component_index,
+                        const SelectedFrame& frame,
+                        const Eigen::Matrix4f& world_from_camera,
+                        const fs::path& cloud_path,
+                        size_t point_count,
+                        std::ofstream* poses_tum,
+                        std::ofstream* poses_matrices,
+                        std::ofstream* component_index_stream) {
+  const Eigen::Matrix3f rotation = world_from_camera.block<3, 3>(0, 0);
+  Eigen::Quaternionf q(rotation);
+  q.normalize();
+  const Eigen::Vector3f t = world_from_camera.block<3, 1>(0, 3);
+  const std::string cloud_file = cloud_path.filename().string();
+
+  *poses_tum << std::fixed << std::setprecision(9) << frame.image_timestamp << " " << t.x() << " " << t.y() << " "
+             << t.z() << " " << q.x() << " " << q.y() << " " << q.z() << " " << q.w() << "\n";
+
+  *poses_matrices << component_index << " " << std::fixed << std::setprecision(9) << frame.image_timestamp << " "
+                  << t.x() << " " << t.y() << " " << t.z() << " " << q.x() << " " << q.y() << " " << q.z() << " "
+                  << q.w();
+  for (int r = 0; r < 4; ++r) {
+    for (int c = 0; c < 4; ++c) {
+      *poses_matrices << " " << world_from_camera(r, c);
+    }
+  }
+  *poses_matrices << " " << cloud_file << "\n";
+
+  *component_index_stream << component_index << "\t" << frame.image_index << "\t" << std::fixed << std::setprecision(9)
+                          << frame.image_timestamp << "\t" << frame.pose.timestamp << "\t" << frame.pose_dt << "\t"
+                          << frame.cumulative_distance << "\t" << frame.distance_from_previous_selected << "\t"
+                          << point_count << "\t1\t" << cloud_file << "\t" << frame.path.string() << "\n";
+}
+
+void writeSkippedComponentPose(size_t component_index,
+                               const SelectedFrame& frame,
+                               std::ofstream* component_index_stream) {
+  *component_index_stream << component_index << "\t" << frame.image_index << "\t" << std::fixed << std::setprecision(9)
+                          << frame.image_timestamp << "\t" << frame.pose.timestamp << "\t" << frame.pose_dt << "\t"
+                          << frame.cumulative_distance << "\t" << frame.distance_from_previous_selected << "\t0\t0\t\t"
+                          << frame.path.string() << "\n";
 }
 
 void writeSelectedFrames(const fs::path& path, const std::vector<SelectedFrame>& selected) {
@@ -608,6 +680,8 @@ int main(int argc, char** argv) {
   std::string t_body_camera;
   int cloud_stride = 4;
   float max_depth = 200.0f;
+  float min_confidence = 0.0f;
+  int multi_view_size = 3;
   float voxel_size = 0.0f;
   size_t max_map_points = 0;
   bool include_sky = false;
@@ -616,6 +690,7 @@ int main(int argc, char** argv) {
   bool skip_unmatched_poses = false;
   bool poses_are_world_to_body = false;
   bool poses_are_world_to_camera = false;
+  bool save_component_clouds = false;
   bool write_intermediate = false;
   bool verbose = false;
 
@@ -656,6 +731,12 @@ int main(int argc, char** argv) {
       po::value<int>(&cloud_stride)->default_value(cloud_stride),
       "Pixel stride for point cloud sampling")(
       "max-depth", po::value<float>(&max_depth)->default_value(max_depth), "Maximum depth kept in the map")(
+      "min-confidence",
+      po::value<float>(&min_confidence)->default_value(min_confidence),
+      "Drop points below this absolute depth-confidence value when the engine exposes confidence; 0 disables")(
+      "multi-view-size",
+      po::value<int>(&multi_view_size)->default_value(multi_view_size),
+      "Number of selected frames per grouped inference for multi-view DA3 engines")(
       "voxel-size",
       po::value<float>(&voxel_size)->default_value(voxel_size),
       "PCL voxel leaf size in map units; 0 disables voxel downsampling")(
@@ -674,6 +755,9 @@ int main(int argc, char** argv) {
       po::bool_switch(&poses_are_world_to_body),
       "Interpret poses as T_body_world and invert them before mapping")(
       "poses-are-world-to-camera", po::bool_switch(&poses_are_world_to_camera), "Alias for --poses-are-world-to-body")(
+      "save-component-clouds",
+      po::bool_switch(&save_component_clouds),
+      "Write each filtered camera-frame component cloud plus T_world_camera pose files for ICP")(
       "write-intermediate", po::bool_switch(&write_intermediate), "Write per-frame depth visualizations")(
       "verbose,v", po::bool_switch(&verbose), "Enable TensorRT metadata logging");
 
@@ -702,6 +786,14 @@ int main(int argc, char** argv) {
     std::cerr << "--max-depth must be positive" << std::endl;
     return 2;
   }
+  if (!std::isfinite(min_confidence) || min_confidence < 0.0f) {
+    std::cerr << "--min-confidence must be finite and non-negative" << std::endl;
+    return 2;
+  }
+  if (multi_view_size <= 0) {
+    std::cerr << "--multi-view-size must be positive" << std::endl;
+    return 2;
+  }
   if (sample_distance < 0.0) {
     std::cerr << "--sample-distance must be non-negative" << std::endl;
     return 2;
@@ -728,6 +820,29 @@ int main(int argc, char** argv) {
 
     fs::create_directories(out_dir);
     writeSelectedFrames(fs::path(out_dir) / "selected_frames.txt", selected);
+    const fs::path component_dir = fs::path(out_dir) / "component_clouds";
+    std::ofstream component_poses_tum;
+    std::ofstream component_poses_matrices;
+    std::ofstream component_index_stream;
+    size_t written_component_clouds = 0;
+    if (save_component_clouds) {
+      fs::create_directories(component_dir);
+      component_poses_tum.open(component_dir / "poses_tum.txt");
+      component_poses_matrices.open(component_dir / "poses_matrices.txt");
+      component_index_stream.open(component_dir / "component_index.tsv");
+      if (!component_poses_tum || !component_poses_matrices || !component_index_stream) {
+        throw std::runtime_error("Failed to open component cloud pose outputs in " + component_dir.string());
+      }
+      component_poses_tum << "# timestamp tx ty tz qx qy qz qw\n";
+      component_poses_tum << "# pose is T_world_camera for camera-frame component_clouds/*.ply\n";
+      component_poses_matrices << "# component timestamp tx ty tz qx qy qz qw m00 m01 m02 m03 m10 m11 m12 m13 "
+                                  "m20 m21 m22 m23 m30 m31 m32 m33 cloud_file\n";
+      component_poses_matrices << "# matrix is row-major T_world_camera\n";
+      component_index_stream << "# clouds are filtered camera-frame PLY files; pose files store T_world_camera\n";
+      component_index_stream << "component\timage_index\timage_timestamp\tpose_timestamp\tpose_dt\t"
+                                "cumulative_distance\tdistance_from_previous_selected\tpoint_count\twritten\t"
+                                "cloud_file\timage_path\n";
+    }
     std::cout << "selected_frames=" << selected.size();
     if (use_pose_timestamps) {
       std::cout << ", use_pose_timestamps=true, poses=" << poses.size() << ", skipped_poses=" << skipped_pose_count;
@@ -743,36 +858,138 @@ int main(int argc, char** argv) {
 
     MapCloud map_cloud;
     map_cloud.is_dense = false;
-    for (size_t i = 0; i < selected.size(); ++i) {
-      cv::Mat image = cv::imread(selected[i].path.string(), cv::IMREAD_COLOR);
-      if (image.empty()) {
-        throw std::runtime_error("Failed to read image: " + selected[i].path.string());
+    auto write_intermediate_outputs =
+        [&](size_t view_index, const SelectedFrame& frame, const xfeat::MonoDepthResult& result) {
+          if (!write_intermediate) {
+            return;
+          }
+          const std::string prefix = outputPrefix(view_index, frame.path);
+          cv::imwrite((fs::path(out_dir) / (prefix + "_depth_vis.png")).string(), colorizeDepth(result.depth));
+          if (!result.sky_mask.empty()) {
+            cv::imwrite((fs::path(out_dir) / (prefix + "_sky_mask.png")).string(), result.sky_mask);
+          }
+        };
+    auto write_component_outputs = [&](size_t view_index,
+                                       const SelectedFrame& frame,
+                                       const MapCloud& local_cloud,
+                                       const Eigen::Matrix4f& world_from_camera) {
+      if (!save_component_clouds) {
+        return;
+      }
+      if (local_cloud.points.empty()) {
+        writeSkippedComponentPose(view_index, frame, &component_index_stream);
+        return;
       }
 
-      const auto intrinsics = makeIntrinsics(image.size(), fx, fy, cx, cy);
-      const auto result = model.infer(image, intrinsics);
-      const size_t added_points = appendTransformedCloud(image,
-                                                         result,
-                                                         intrinsics,
-                                                         selected[i].pose,
-                                                         pose_is_world_to_body,
-                                                         body_from_camera,
-                                                         cloud_stride,
-                                                         max_depth,
-                                                         include_sky,
-                                                         &map_cloud);
+      const std::string prefix = outputPrefix(view_index, frame.path);
+      const fs::path cloud_path = component_dir / (prefix + "_points_camera.ply");
+      writeBinaryPly(cloud_path, local_cloud);
+      writeComponentPose(view_index,
+                         frame,
+                         world_from_camera,
+                         cloud_path,
+                         local_cloud.points.size(),
+                         &component_poses_tum,
+                         &component_poses_matrices,
+                         &component_index_stream);
+      ++written_component_clouds;
+    };
 
-      if (write_intermediate) {
-        const std::string prefix = outputPrefix(i, selected[i].path);
-        cv::imwrite((fs::path(out_dir) / (prefix + "_depth_vis.png")).string(), colorizeDepth(result.depth));
-        if (!result.sky_mask.empty()) {
-          cv::imwrite((fs::path(out_dir) / (prefix + "_sky_mask.png")).string(), result.sky_mask);
+    if (model.has_camera_inputs()) {
+      if (selected.size() < static_cast<size_t>(multi_view_size)) {
+        throw std::runtime_error("Pose-conditioned multi-view engine needs at least --multi-view-size selected frames");
+      }
+      std::cout << "inference_mode=multi_view, multi_view_size=" << multi_view_size;
+      if (min_confidence > 0.0f) {
+        std::cout << ", min_confidence=" << min_confidence;
+      }
+      std::cout << std::endl;
+
+      size_t next_append_index = 0;
+      while (next_append_index < selected.size()) {
+        size_t group_start = next_append_index;
+        size_t append_start = next_append_index;
+        if (group_start + static_cast<size_t>(multi_view_size) > selected.size()) {
+          group_start = selected.size() - static_cast<size_t>(multi_view_size);
         }
-      }
 
-      std::cout << "view " << i << ": image_index=" << selected[i].image_index
-                << ", distance=" << selected[i].cumulative_distance << ", pose_dt=" << selected[i].pose_dt
-                << ", added_points=" << added_points << std::endl;
+        std::vector<cv::Mat> group_images;
+        std::vector<xfeat::CameraIntrinsics> group_intrinsics;
+        std::vector<Eigen::Matrix4f> group_world_from_camera;
+        std::vector<cv::Matx44f> group_world_to_camera;
+        group_images.reserve(static_cast<size_t>(multi_view_size));
+        group_intrinsics.reserve(static_cast<size_t>(multi_view_size));
+        group_world_from_camera.reserve(static_cast<size_t>(multi_view_size));
+        group_world_to_camera.reserve(static_cast<size_t>(multi_view_size));
+
+        for (int local = 0; local < multi_view_size; ++local) {
+          const size_t frame_index = group_start + static_cast<size_t>(local);
+          cv::Mat image = cv::imread(selected[frame_index].path.string(), cv::IMREAD_COLOR);
+          if (image.empty()) {
+            throw std::runtime_error("Failed to read image: " + selected[frame_index].path.string());
+          }
+          group_intrinsics.push_back(makeIntrinsics(image.size(), fx, fy, cx, cy));
+          const Eigen::Matrix4f world_from_camera =
+              worldFromCamera(selected[frame_index].pose, pose_is_world_to_body, body_from_camera);
+          group_world_from_camera.push_back(world_from_camera);
+          group_world_to_camera.push_back(toCvMatx44f(world_from_camera.inverse()));
+          group_images.push_back(std::move(image));
+        }
+
+        const auto results = model.infer_multi_view(group_images, group_intrinsics, group_world_to_camera);
+        for (int local = 0; local < multi_view_size; ++local) {
+          const size_t frame_index = group_start + static_cast<size_t>(local);
+          if (frame_index < append_start) {
+            continue;
+          }
+          const MapCloud local_cloud = makeCameraCloud(group_images[static_cast<size_t>(local)],
+                                                       results[static_cast<size_t>(local)],
+                                                       group_intrinsics[static_cast<size_t>(local)],
+                                                       cloud_stride,
+                                                       max_depth,
+                                                       min_confidence,
+                                                       include_sky);
+          const Eigen::Matrix4f& world_from_camera = group_world_from_camera[static_cast<size_t>(local)];
+          const size_t added_points = appendCameraCloudToMap(local_cloud, world_from_camera, &map_cloud);
+          write_component_outputs(frame_index, selected[frame_index], local_cloud, world_from_camera);
+          write_intermediate_outputs(frame_index, selected[frame_index], results[static_cast<size_t>(local)]);
+          std::cout << "view " << frame_index << ": image_index=" << selected[frame_index].image_index
+                    << ", group_start=" << group_start << ", distance=" << selected[frame_index].cumulative_distance
+                    << ", pose_dt=" << selected[frame_index].pose_dt << ", added_points=" << added_points << std::endl;
+        }
+
+        if (group_start + static_cast<size_t>(multi_view_size) >= selected.size()) {
+          break;
+        }
+        next_append_index = group_start + static_cast<size_t>(multi_view_size);
+      }
+    } else {
+      std::cout << "inference_mode=single_view";
+      if (min_confidence > 0.0f) {
+        std::cout << ", min_confidence=" << min_confidence;
+      }
+      std::cout << std::endl;
+
+      for (size_t i = 0; i < selected.size(); ++i) {
+        cv::Mat image = cv::imread(selected[i].path.string(), cv::IMREAD_COLOR);
+        if (image.empty()) {
+          throw std::runtime_error("Failed to read image: " + selected[i].path.string());
+        }
+
+        const auto intrinsics = makeIntrinsics(image.size(), fx, fy, cx, cy);
+        const auto result = model.infer(image, intrinsics);
+        const MapCloud local_cloud =
+            makeCameraCloud(image, result, intrinsics, cloud_stride, max_depth, min_confidence, include_sky);
+        const Eigen::Matrix4f world_from_camera =
+            worldFromCamera(selected[i].pose, pose_is_world_to_body, body_from_camera);
+        const size_t added_points = appendCameraCloudToMap(local_cloud, world_from_camera, &map_cloud);
+        write_component_outputs(i, selected[i], local_cloud, world_from_camera);
+
+        write_intermediate_outputs(i, selected[i], result);
+        std::cout << "view " << i << ": image_index=" << selected[i].image_index
+                  << ", distance=" << selected[i].cumulative_distance << ", pose_dt=" << selected[i].pose_dt
+                  << ", added_points=" << added_points << std::endl;
+      }
     }
 
     const size_t points_before_voxel = map_cloud.points.size();
@@ -787,6 +1004,10 @@ int main(int argc, char** argv) {
 
     std::cout << "map_points=" << map_cloud.points.size() << std::endl;
     std::cout << "map=" << map_path << std::endl;
+    if (save_component_clouds) {
+      std::cout << "component_clouds=" << written_component_clouds << std::endl;
+      std::cout << "component_dir=" << component_dir << std::endl;
+    }
   } catch (const std::exception& e) {
     std::cerr << "Pose map demo failed: " << e.what() << std::endl;
     return 1;
