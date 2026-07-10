@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cstdlib>
 #include <limits>
 #include <numeric>
@@ -141,7 +142,7 @@ TEST(MonoDepthTensorShapes, ExtractsBatchViewHeightWidthChannelOutput) {
   expectPlaneStartsAt(planes[2], 2, 4, 16.0f);
 }
 
-TEST(DepthAnythingV3TRT, SmokeRunsOnlyWhenEngineIsProvided) {
+TEST(DepthAnythingV3TRT, TwoViewSmokeRunsOnlyWhenEngineIsProvided) {
   const char* engine = std::getenv("DA3_TRT_ENGINE");
   if (engine == nullptr || std::string(engine).empty()) {
     GTEST_SKIP() << "DA3_TRT_ENGINE is not set";
@@ -166,10 +167,31 @@ TEST(DepthAnythingV3TRT, SmokeRunsOnlyWhenEngineIsProvided) {
   params.engine_path = engine;
   xfeat::DepthAnythingV3TRT model(params);
 
-  auto result = model.infer(image);
-  EXPECT_EQ(result.depth.type(), CV_32FC1);
-  EXPECT_EQ(result.depth.size(), image.size());
-  EXPECT_FALSE(result.raw_depth.empty());
+  EXPECT_FALSE(model.has_camera_inputs());
+  xfeat::CameraIntrinsics intrinsics;
+  intrinsics.fx = static_cast<double>(std::max(image.cols, image.rows));
+  intrinsics.fy = intrinsics.fx;
+  intrinsics.cx = 0.5 * static_cast<double>(image.cols - 1);
+  intrinsics.cy = 0.5 * static_cast<double>(image.rows - 1);
+  intrinsics.width = image.cols;
+  intrinsics.height = image.rows;
+
+  const std::vector<cv::Mat> images{image, image};
+  const std::vector<xfeat::CameraIntrinsics> batch_intrinsics{
+      intrinsics, intrinsics};
+  const auto results = model.infer_multi_view(images, batch_intrinsics);
+  ASSERT_EQ(results.size(), 2u);
+  for (std::size_t view = 0; view < results.size(); ++view) {
+    const auto& result = results[view];
+    EXPECT_EQ(result.depth.type(), CV_32FC1);
+    EXPECT_EQ(result.depth.size(), image.size());
+    EXPECT_EQ(result.confidence.type(), CV_32FC1);
+    EXPECT_EQ(result.confidence.size(), image.size());
+    EXPECT_FALSE(result.raw_depth.empty());
+    EXPECT_FALSE(result.raw_confidence.empty());
+    EXPECT_EQ(result.metadata.view_index, static_cast<int>(view));
+    EXPECT_EQ(result.metadata.view_count, 2);
+  }
 #endif
 }
 
