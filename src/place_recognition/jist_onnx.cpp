@@ -3,6 +3,7 @@
 #include <cuda_runtime.h>
 
 #include <algorithm>
+#include <filesystem>
 #include <iostream>
 #include <opencv2/imgproc.hpp>
 #include <stdexcept>
@@ -17,6 +18,15 @@ JistONNX::JistONNX(Ort::Env& env, const Params& params)
       img_width_(params.img_width),
       descriptor_dim_(0),
       normalize_output_(params.normalize_output) {
+  if (!std::filesystem::is_regular_file(params.model_path)) {
+    throw std::invalid_argument("JistONNX model is not a readable file: " +
+                                params.model_path);
+  }
+  if (img_height_ <= 0 || img_width_ <= 0) {
+    throw std::invalid_argument(
+        "JistONNX image dimensions must both be positive");
+  }
+
   // Configure session options
   session_options_.SetIntraOpNumThreads(1);
   session_options_.SetInterOpNumThreads(1);
@@ -59,6 +69,10 @@ JistONNX::JistONNX(Ort::Env& env, const Params& params)
 
   // Input names - store strings first, then create const char* pointers
   size_t num_input_nodes = session_.GetInputCount();
+  if (num_input_nodes != 1) {
+    throw std::runtime_error("JistONNX requires exactly one model input; got " +
+                             std::to_string(num_input_nodes));
+  }
   input_name_strings_.resize(num_input_nodes);
   input_names_.resize(num_input_nodes);
   for (size_t i = 0; i < num_input_nodes; i++) {
@@ -70,6 +84,11 @@ JistONNX::JistONNX(Ort::Env& env, const Params& params)
 
   // Output names - store strings first, then create const char* pointers
   size_t num_output_nodes = session_.GetOutputCount();
+  if (num_output_nodes != 1) {
+    throw std::runtime_error(
+        "JistONNX requires exactly one model output; got " +
+        std::to_string(num_output_nodes));
+  }
   output_name_strings_.resize(num_output_nodes);
   output_names_.resize(num_output_nodes);
   for (size_t i = 0; i < num_output_nodes; i++) {
@@ -80,10 +99,44 @@ JistONNX::JistONNX(Ort::Env& env, const Params& params)
   }
 
   // Read seq_length and descriptor_dim from model shapes
-  auto input_shape = session_.GetInputTypeInfo(0).GetTensorTypeAndShapeInfo().GetShape();
+  const auto input_type_info = session_.GetInputTypeInfo(0);
+  const auto input_info = input_type_info.GetTensorTypeAndShapeInfo();
+  if (input_info.GetElementType() != ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT) {
+    throw std::runtime_error("JistONNX model input must be float32");
+  }
+  auto input_shape = input_info.GetShape();
+  if (input_shape.size() != 5) {
+    throw std::runtime_error(
+        "JistONNX model input must have rank 5: [batch, sequence, 3, "
+        "height, width]");
+  }
+  if (input_shape[1] <= 0 || input_shape[2] != 3 || input_shape[3] <= 0 ||
+      input_shape[4] <= 0) {
+    throw std::runtime_error(
+        "JistONNX requires fixed positive sequence/height/width dimensions "
+        "and exactly 3 input channels");
+  }
+  if (input_shape[3] != img_height_ || input_shape[4] != img_width_) {
+    throw std::runtime_error(
+        "JistONNX model image dimensions do not match the configured "
+        "dimensions: model=" +
+        std::to_string(input_shape[3]) + "x" +
+        std::to_string(input_shape[4]) + ", configured=" +
+        std::to_string(img_height_) + "x" + std::to_string(img_width_));
+  }
   seq_length_ = static_cast<int>(input_shape[1]);
 
-  auto output_shape = session_.GetOutputTypeInfo(0).GetTensorTypeAndShapeInfo().GetShape();
+  const auto output_type_info = session_.GetOutputTypeInfo(0);
+  const auto output_info = output_type_info.GetTensorTypeAndShapeInfo();
+  if (output_info.GetElementType() != ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT) {
+    throw std::runtime_error("JistONNX model output must be float32");
+  }
+  auto output_shape = output_info.GetShape();
+  if (output_shape.size() != 2 || output_shape[1] <= 0) {
+    throw std::runtime_error(
+        "JistONNX model output must have shape [batch, descriptor_dim] with "
+        "a fixed positive descriptor dimension");
+  }
   descriptor_dim_ = static_cast<int>(output_shape[1]);
 
   std::cout << "JIST model loaded successfully." << std::endl;
