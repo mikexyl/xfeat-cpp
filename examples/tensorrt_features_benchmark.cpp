@@ -21,6 +21,7 @@
 
 #include "xfeat-cpp/lighterglue_trt.h"
 #include "xfeat-cpp/place_recognition/jist_trt.h"
+#include "xfeat-cpp/place_recognition/mixvpr_trt.h"
 #include "xfeat-cpp/tensorrt/detail/trt_engine.h"
 #include "xfeat-cpp/xfeat_trt.h"
 
@@ -32,6 +33,7 @@ struct Options {
   std::string xfeat_engine;
   std::string lighterglue_engine;
   std::string jist_engine;
+  std::string mixvpr_engine;
   std::vector<std::string> image_paths;
   std::string json_out;
   int top_k = 500;
@@ -76,6 +78,7 @@ void printUsage(const char* executable) {
             << "  --runs N        Measured calls for each stage (default: 200)\n"
             << "  --json-out PATH Optional benchmark JSON output path\n"
             << "  --jist-engine PATH  Also benchmark a JIST TensorRT engine\n"
+            << "  --mixvpr-engine PATH  Also benchmark a MixVPR TensorRT engine\n"
             << "  --verbose       Enable TensorRT metadata logging\n";
 }
 
@@ -97,6 +100,8 @@ Options parseOptions(int argc, char** argv) {
       options.lighterglue_engine = requireValue(argc, argv, index, argument);
     } else if (argument == "--jist-engine") {
       options.jist_engine = requireValue(argc, argv, index, argument);
+    } else if (argument == "--mixvpr-engine") {
+      options.mixvpr_engine = requireValue(argc, argv, index, argument);
     } else if (argument == "--top-k") {
       options.top_k = std::stoi(requireValue(argc, argv, index, argument));
     } else if (argument == "--warmup") {
@@ -338,6 +343,18 @@ int main(int argc, char** argv) {
       const auto jist_load_end = std::chrono::steady_clock::now();
       jist_load_ms = std::chrono::duration<double, std::milli>(jist_load_end - jist_load_start).count();
     }
+    std::unique_ptr<xfeat::MixVPRTRT> mixvpr;
+    double mixvpr_load_ms = 0.0;
+    if (!options.mixvpr_engine.empty()) {
+      xfeat::MixVPRTRT::Params params;
+      params.model_path = options.mixvpr_engine;
+      params.verbose = options.verbose;
+      const auto mixvpr_load_start = std::chrono::steady_clock::now();
+      mixvpr = std::make_unique<xfeat::MixVPRTRT>(params);
+      synchronizeCuda();
+      const auto mixvpr_load_end = std::chrono::steady_clock::now();
+      mixvpr_load_ms = std::chrono::duration<double, std::milli>(mixvpr_load_end - mixvpr_load_start).count();
+    }
     const MemorySnapshot after_models = queryCudaMemory();
     const double xfeat_load_ms = std::chrono::duration<double, std::milli>(xfeat_load_end - xfeat_load_start).count();
     const double lighterglue_load_ms =
@@ -356,6 +373,8 @@ int main(int argc, char** argv) {
       }
       jist_descriptor = jist->infer(jist_sequence);
     }
+    cv::Mat mixvpr_descriptor;
+    if (mixvpr) mixvpr_descriptor = mixvpr->infer(image0);
 
     for (int i = 0; i < options.warmup; ++i) {
       const cv::Mat& image = (i % 2 == 0) ? image0 : image1;
@@ -373,6 +392,11 @@ int main(int argc, char** argv) {
     }
     if (jist) {
       for (int i = 0; i < options.warmup; ++i) jist_descriptor = jist->infer(jist_sequence);
+    }
+    if (mixvpr) {
+      for (int i = 0; i < options.warmup; ++i) {
+        mixvpr_descriptor = mixvpr->infer(i % 2 == 0 ? image0 : image1);
+      }
     }
     synchronizeCuda();
     const MemorySnapshot after_warmup = queryCudaMemory();
@@ -397,10 +421,16 @@ int main(int argc, char** argv) {
       jist_breakdown = timeJistBreakdown(
           options.runs, options.jist_engine, jist_sequence, jist->get_img_width(), jist->get_img_height());
     }
+    std::optional<TimingStats> mixvpr_timing;
+    if (mixvpr) {
+      mixvpr_timing = timeCalls(options.runs, [&](int iteration) {
+        mixvpr_descriptor = mixvpr->infer(iteration % 2 == 0 ? image0 : image1);
+      });
+    }
     synchronizeCuda();
     const MemorySnapshot after_benchmark = queryCudaMemory();
 
-    std::cout << "\nXFeat/LighterGlue" << (jist ? "/JIST" : "") << " TensorRT benchmark\n";
+    std::cout << "\nXFeat/LighterGlue" << (jist ? "/JIST" : "") << (mixvpr ? "/MixVPR" : "") << " TensorRT benchmark\n";
     std::cout << "  images=" << image0.cols << 'x' << image0.rows << ", " << image1.cols << 'x' << image1.rows
               << "; model_input=" << extractor.input_width() << 'x' << extractor.input_height() << '\n';
     std::cout << "  top_k=" << options.top_k << ", keypoints=" << detection0.keypoints.rows << '/'
@@ -409,6 +439,7 @@ int main(int argc, char** argv) {
     std::cout << "  engine_load_ms: xfeat=" << std::fixed << std::setprecision(3) << xfeat_load_ms
               << ", lighterglue=" << lighterglue_load_ms;
     if (jist) std::cout << ", jist=" << jist_load_ms;
+    if (mixvpr) std::cout << ", mixvpr=" << mixvpr_load_ms;
     std::cout << '\n';
     printStats("xfeat_per_image", xfeat_timing, "images_per_second", 1.0);
     printStats("lighterglue_per_pair", lighterglue_timing, "pairs_per_second", 1.0);
@@ -421,6 +452,11 @@ int main(int argc, char** argv) {
       printStats("jist_breakdown_engine_wrapper", jist_breakdown->engine_wrapper, "sequences_per_second", 1.0);
       printStats("jist_breakdown_postprocess", jist_breakdown->postprocess, "sequences_per_second", 1.0);
       printStats("jist_breakdown_total", jist_breakdown->total, "sequences_per_second", 1.0);
+    }
+    if (mixvpr_timing) {
+      std::cout << "  mixvpr_descriptor_dim=" << mixvpr_descriptor.cols
+                << ", descriptor_l2=" << cv::norm(mixvpr_descriptor, cv::NORM_L2) << '\n';
+      printStats("mixvpr_per_image", *mixvpr_timing, "images_per_second", 1.0);
     }
     std::cout << "  cuda_memory_mib: before_models=" << std::fixed << std::setprecision(1)
               << bytesToMiB(before_models.usedBytes()) << ", after_models=" << bytesToMiB(after_models.usedBytes())
@@ -436,6 +472,7 @@ int main(int argc, char** argv) {
       out << "  \"xfeat_engine\": \"" << jsonEscape(options.xfeat_engine) << "\",\n";
       out << "  \"lighterglue_engine\": \"" << jsonEscape(options.lighterglue_engine) << "\",\n";
       if (jist) out << "  \"jist_engine\": \"" << jsonEscape(options.jist_engine) << "\",\n";
+      if (mixvpr) out << "  \"mixvpr_engine\": \"" << jsonEscape(options.mixvpr_engine) << "\",\n";
       out << "  \"images\": [\"" << jsonEscape(options.image_paths[0]) << "\", \"" << jsonEscape(options.image_paths[1])
           << "\"],\n";
       out << "  \"model_input\": [" << extractor.input_width() << ", " << extractor.input_height() << "],\n";
@@ -446,6 +483,7 @@ int main(int argc, char** argv) {
       out << "  \"runs\": " << options.runs << ",\n";
       out << "  \"engine_load_ms\": {\"xfeat\": " << xfeat_load_ms << ", \"lighterglue\": " << lighterglue_load_ms;
       if (jist) out << ", \"jist\": " << jist_load_ms;
+      if (mixvpr) out << ", \"mixvpr\": " << mixvpr_load_ms;
       out << "},\n";
       writeStatsJson(out, "xfeat_per_image_ms", xfeat_timing, true);
       writeStatsJson(out, "lighterglue_per_pair_ms", lighterglue_timing, true);
@@ -459,6 +497,11 @@ int main(int argc, char** argv) {
         writeStatsJson(out, "jist_breakdown_engine_wrapper_ms", jist_breakdown->engine_wrapper, true);
         writeStatsJson(out, "jist_breakdown_postprocess_ms", jist_breakdown->postprocess, true);
         writeStatsJson(out, "jist_breakdown_total_ms", jist_breakdown->total, true);
+      }
+      if (mixvpr_timing) {
+        out << "  \"mixvpr_descriptor_dim\": " << mixvpr_descriptor.cols << ",\n";
+        out << "  \"mixvpr_descriptor_l2\": " << cv::norm(mixvpr_descriptor, cv::NORM_L2) << ",\n";
+        writeStatsJson(out, "mixvpr_per_image_ms", *mixvpr_timing, true);
       }
       out << "  \"cuda_memory_mib\": {\"before_models\": " << bytesToMiB(before_models.usedBytes())
           << ", \"after_models\": " << bytesToMiB(after_models.usedBytes())

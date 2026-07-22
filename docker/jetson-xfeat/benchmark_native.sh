@@ -30,6 +30,12 @@ if [[ -f "$jist_engine" ]]; then
   jist_args=(--jist-engine "$jist_engine")
 fi
 
+mixvpr_args=()
+mixvpr_engine="$artifact_dir/mixvpr_resnet50_4096d_fp16.engine"
+if [[ -f "$mixvpr_engine" ]]; then
+  mixvpr_args=(--mixvpr-engine "$mixvpr_engine")
+fi
+
 mkdir -p "$results_dir"
 timestamp=$(date -u +%Y%m%dT%H%M%SZ)
 json_path="$results_dir/xfeat-lightglue-fp16-${timestamp}.json"
@@ -51,6 +57,7 @@ trap cleanup EXIT INT TERM
   --runs "$runs" \
   --json-out "$json_path" \
   "${jist_args[@]}" \
+  "${mixvpr_args[@]}" \
   "$1" "$2"
 
 echo "Benchmark JSON: $json_path"

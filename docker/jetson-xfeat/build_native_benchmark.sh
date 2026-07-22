@@ -18,6 +18,7 @@ g++ \
   src/lighterglue_trt.cpp \
   src/place_recognition/place_recognizer.cpp \
   src/place_recognition/jist_trt.cpp \
+  src/place_recognition/mixvpr_trt.cpp \
   include/xfeat-cpp/nms/anms/anms.cpp \
   examples/tensorrt_features_benchmark.cpp \
   -o "$output" \

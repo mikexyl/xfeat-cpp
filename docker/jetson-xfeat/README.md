@@ -1,9 +1,10 @@
-# Jetson XFeat/LighterGlue TensorRT benchmark
+# Jetson XFeat/LighterGlue/JIST/MixVPR TensorRT benchmark
 
 This benchmark targets JetPack 7.2 / L4T R39.2 on Jetson Orin and uses the
 TensorRT 26.05 container (CUDA 13.2, TensorRT 10.16). It reports warmup-excluded
 latency distributions for XFeat extraction, cached-feature LighterGlue
-matching, and the complete two-image feature-and-match pipeline.
+matching, MixVPR place descriptors, and the complete two-image
+feature-and-match pipeline.
 
 Build the small native C++ benchmark image from the repository root:
 
@@ -18,12 +19,15 @@ the fully offline host-native path is also available:
 docker/jetson-xfeat/build_native_benchmark.sh
 docker/jetson-xfeat/build_engines_native.sh
 docker/jetson-xfeat/build_jist_engine_native.sh
+docker/jetson-xfeat/build_mixvpr_engine_native.sh
 docker/jetson-xfeat/benchmark_native.sh image/sample1.jpg image/sample2.jpg
 ```
 
 When `JIST_r18_512_seqgem_simplified_fp16.engine` is present in the artifact
 directory, the native benchmark also measures one five-frame JIST sequence per
 call. The two input images are alternated to form the test sequence.
+When `mixvpr_resnet50_4096d_fp16.engine` is present, it also measures one
+320×320, 4096-dimensional MixVPR descriptor per call.
 
 Copy these portable models into `artifacts/xfeat-lightglue/`:
 
@@ -31,6 +35,7 @@ Copy these portable models into `artifacts/xfeat-lightglue/`:
 xfeat_320x224.onnx
 lg_320x224_dyn.onnx
 JIST_r18_512_seqgem_simplified.onnx
+mixvpr_resnet50_4096d.onnx
 ```
 
 For repeatable peak-performance results, enable the same MAXN and static-clock
@@ -56,4 +61,4 @@ The LighterGlue engine uses minimum, optimum, and maximum keypoint counts of 1,
 JSON result and a 100 ms `tegrastats` log.
 
 TensorRT engines are specific to their TensorRT release and GPU architecture;
-build both engines on the target Jetson rather than copying desktop engines.
+build the engines on the target Jetson rather than copying desktop engines.
