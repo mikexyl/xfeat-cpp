@@ -69,6 +69,7 @@ if(TENSORRT_LIBRARY)
         src/xfeat_trt.cpp
         src/lighterglue_trt.cpp
         src/place_recognition/jist_trt.cpp
+        src/place_recognition/mixvpr_trt.cpp
     )
 else()
     message(STATUS "TensorRT not found - TensorRT depth modules will not be available")

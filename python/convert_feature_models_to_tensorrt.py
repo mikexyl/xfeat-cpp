@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build TensorRT engines for XFeat, LighterGlue, and JIST ONNX models."""
+"""Build TensorRT engines for XFeat, LighterGlue, JIST, and MixVPR ONNX models."""
 
 from __future__ import annotations
 
@@ -72,6 +72,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--xfeat", type=Path, help="fixed-shape XFeat ONNX model")
     parser.add_argument("--lighterglue", type=Path, help="dynamic-shape LighterGlue ONNX model")
     parser.add_argument("--jist", type=Path, help="fixed-shape JIST ONNX model")
+    parser.add_argument("--mixvpr", type=Path, help="fixed-shape MixVPR ONNX model")
     parser.add_argument("--output-dir", type=Path, default=Path("onnx_model"))
     parser.add_argument("--trtexec", help="path to the TensorRT trtexec executable")
     parser.add_argument("--precision", choices=("fp16", "fp32"), default="fp16")
@@ -81,8 +82,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--opt-keypoints", type=positive, default=500)
     parser.add_argument("--max-keypoints", type=positive, default=1024)
     args = parser.parse_args()
-    if args.xfeat is None and args.lighterglue is None and args.jist is None:
-        parser.error("provide at least one of --xfeat, --lighterglue, or --jist")
+    if args.xfeat is None and args.lighterglue is None and args.jist is None and args.mixvpr is None:
+        parser.error("provide at least one of --xfeat, --lighterglue, --jist, or --mixvpr")
     if not args.min_keypoints <= args.opt_keypoints <= args.max_keypoints:
         parser.error("keypoint profile sizes must satisfy min <= opt <= max")
     return args
@@ -121,6 +122,13 @@ def main() -> None:
         build_engine(
             onnx_path=args.jist.resolve(),
             output_path=engine_path(args.output_dir, args.jist, args.precision).resolve(),
+            extra_arguments=[],
+            **common,
+        )
+    if args.mixvpr is not None:
+        build_engine(
+            onnx_path=args.mixvpr.resolve(),
+            output_path=engine_path(args.output_dir, args.mixvpr, args.precision).resolve(),
             extra_arguments=[],
             **common,
         )
