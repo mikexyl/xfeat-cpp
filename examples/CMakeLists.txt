@@ -100,6 +100,15 @@ if(TENSORRT_AVAILABLE)
     target_include_directories(mono_depth_benchmark PRIVATE ${Eigen3_INCLUDE_DIR})
     install(TARGETS mono_depth_benchmark DESTINATION bin)
 
+    add_executable(tensorrt_features_benchmark tensorrt_features_benchmark.cpp)
+    target_link_libraries(tensorrt_features_benchmark
+        PRIVATE
+        ${PROJECT_NAME}
+        TensorRT::nvinfer
+        CUDA::cudart
+    )
+    install(TARGETS tensorrt_features_benchmark DESTINATION bin)
+
     add_executable(mono_depth_pose_map_example mono_depth_pose_map_example.cpp)
     target_link_libraries(mono_depth_pose_map_example
         PRIVATE
