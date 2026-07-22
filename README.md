@@ -11,3 +11,9 @@
     # Verify it's running
     ps aux | grep nvidia-cuda-mps
     ```
+
+## TensorRT feature backends
+
+Native TensorRT inference is available for XFeat, LighterGlue, and JIST. See
+[docs/TENSORRT_FEATURES.md](docs/TENSORRT_FEATURES.md) for engine conversion,
+runtime APIs, and smoke-test instructions.

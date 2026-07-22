@@ -32,7 +32,7 @@ class PlaceRecognizer {
    * defaults for img_height and img_width.
    */
   struct Params {
-    std::string model_path;       // Path to ONNX model file
+    std::string model_path;       // Path to the backend-specific model or engine file
     bool use_gpu = true;          // Use GPU (CUDA) for inference
     int img_height = 0;           // Input image height (set by derived model)
     int img_width = 0;            // Input image width  (set by derived model)

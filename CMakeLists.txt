@@ -7,11 +7,18 @@ set(CMAKE_CXX_STANDARD_REQUIRED True)
 # include the cmake modules
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
 
+if(DEFINED ENV{CUDA_HOME} AND EXISTS "$ENV{CUDA_HOME}/lib64/libcudart.so")
+    # Conda/Pixi environments may contain an older libcudart that CMake finds
+    # before the toolkit selected by CUDA_HOME. Pin CUDA::cudart to the same
+    # toolkit as nvcc so native TensorRT and CUDA calls share one runtime.
+    set(CUDA_CUDART "$ENV{CUDA_HOME}/lib64/libcudart.so" CACHE FILEPATH "CUDA runtime library" FORCE)
+    set(CUDA_cudart_LIBRARY "$ENV{CUDA_HOME}/lib64/libcudart.so" CACHE FILEPATH "CUDA runtime library" FORCE)
+endif()
+find_package(CUDAToolkit REQUIRED)
 find_package(OpenCV REQUIRED)
 find_package(onnxruntime REQUIRED)
 find_package(TBB REQUIRED)
 find_package(faiss REQUIRED)
-find_package(CUDAToolkit REQUIRED)
 find_package(OpenMP REQUIRED)
 
 # Try to find TensorRT (optional for TensorRT-backed depth modules)
@@ -57,6 +64,12 @@ if(TENSORRT_LIBRARY)
     set(MONO_DEPTH_SOURCES
         src/mono_depth/depth_anything_v3_trt.cpp
     )
+    set(TENSORRT_FEATURE_SOURCES
+        src/tensorrt/trt_engine.cpp
+        src/xfeat_trt.cpp
+        src/lighterglue_trt.cpp
+        src/place_recognition/jist_trt.cpp
+    )
 else()
     message(STATUS "TensorRT not found - TensorRT depth modules will not be available")
     set(TENSORRT_AVAILABLE FALSE)
@@ -66,6 +79,7 @@ else()
         src/stereo_depth/stereo_depth_onnx.cpp
     )
     set(MONO_DEPTH_SOURCES)
+    set(TENSORRT_FEATURE_SOURCES)
 endif()
 
 set(CMAKE_CUDA_ARCHITECTURES 89)
@@ -85,6 +99,7 @@ add_library(${PROJECT_NAME} STATIC
     src/segmentation/skyseg_trt.cpp
     ${STEREO_DEPTH_SOURCES}
     ${MONO_DEPTH_SOURCES}
+    ${TENSORRT_FEATURE_SOURCES}
 )
 
 set_target_properties(${PROJECT_NAME} PROPERTIES POSITION_INDEPENDENT_CODE ON)
