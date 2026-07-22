@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdlib>
 #include <limits>
 #include <numeric>
@@ -10,6 +11,7 @@
 #include <vector>
 
 #include "xfeat-cpp/mono_depth/detail/depth_anything_v3_postprocess.h"
+#include "xfeat-cpp/mono_depth/detail/depth_anything_v3_pose.h"
 #include "xfeat-cpp/mono_depth/detail/depth_anything_v3_tensor.h"
 
 #ifdef HAVE_TENSORRT
@@ -142,6 +144,26 @@ TEST(MonoDepthTensorShapes, ExtractsBatchViewHeightWidthChannelOutput) {
   expectPlaneStartsAt(planes[2], 2, 4, 16.0f);
 }
 
+TEST(MonoDepthPoseScale, UsesPredictedToInputBaselineRatio) {
+  std::vector<cv::Matx44f> input{cv::Matx44f::eye(), cv::Matx44f::eye()};
+  std::vector<cv::Matx44f> predicted{cv::Matx44f::eye(), cv::Matx44f::eye()};
+  input[1](0, 3) = -10.0f;
+  predicted[1](0, 3) = -20.0f;
+
+  EXPECT_DOUBLE_EQ(detail::estimateInputToPredictedPoseScale(predicted, input), 2.0);
+}
+
+TEST(MonoDepthPoseScale, RejectsUnavailableDegenerateAndNonFiniteBaselines) {
+  const std::vector<cv::Matx44f> one_pose{cv::Matx44f::eye()};
+  const std::vector<cv::Matx44f> two_poses{cv::Matx44f::eye(), cv::Matx44f::eye()};
+  EXPECT_THROW(detail::estimateInputToPredictedPoseScale(one_pose, two_poses), std::invalid_argument);
+  EXPECT_THROW(detail::estimateInputToPredictedPoseScale(two_poses, two_poses), std::runtime_error);
+
+  std::vector<cv::Matx44f> non_finite = two_poses;
+  non_finite[1](0, 3) = std::numeric_limits<float>::quiet_NaN();
+  EXPECT_THROW(detail::estimateInputToPredictedPoseScale(non_finite, two_poses), std::invalid_argument);
+}
+
 TEST(DepthAnythingV3TRT, TwoViewSmokeRunsOnlyWhenEngineIsProvided) {
   const char* engine = std::getenv("DA3_TRT_ENGINE");
   if (engine == nullptr || std::string(engine).empty()) {
@@ -189,8 +211,81 @@ TEST(DepthAnythingV3TRT, TwoViewSmokeRunsOnlyWhenEngineIsProvided) {
     EXPECT_EQ(result.confidence.size(), image.size());
     EXPECT_FALSE(result.raw_depth.empty());
     EXPECT_FALSE(result.raw_confidence.empty());
+    EXPECT_TRUE(result.predicted_world_to_camera.has_value());
+    EXPECT_DOUBLE_EQ(result.metadata.pose_scale, 1.0);
+    EXPECT_FALSE(result.metadata.pose_scaled);
     EXPECT_EQ(result.metadata.view_index, static_cast<int>(view));
     EXPECT_EQ(result.metadata.view_count, 2);
+  }
+  const auto camera_center = [](const cv::Matx44f& extrinsic) {
+    const cv::Vec3f translation(
+        extrinsic(0, 3), extrinsic(1, 3), extrinsic(2, 3));
+    const cv::Matx33f rotation(extrinsic(0, 0),
+                               extrinsic(0, 1),
+                               extrinsic(0, 2),
+                               extrinsic(1, 0),
+                               extrinsic(1, 1),
+                               extrinsic(1, 2),
+                               extrinsic(2, 0),
+                               extrinsic(2, 1),
+                               extrinsic(2, 2));
+    return -(rotation.t() * translation);
+  };
+  const cv::Vec3f da3_baseline =
+      camera_center(*results[1].predicted_world_to_camera) -
+      camera_center(*results[0].predicted_world_to_camera);
+  EXPECT_TRUE(std::isfinite(cv::norm(da3_baseline)));
+  EXPECT_GT(cv::norm(da3_baseline), 1e-6);
+#endif
+}
+
+TEST(DepthAnythingV3TRT, PoseConditionedScaleRunsOnlyWhenEngineIsProvided) {
+  const char* engine = std::getenv("DA3_POSE_TRT_ENGINE");
+  if (engine == nullptr || std::string(engine).empty()) {
+    GTEST_SKIP() << "DA3_POSE_TRT_ENGINE is not set";
+  }
+
+#ifndef HAVE_TENSORRT
+  GTEST_SKIP() << "TensorRT support is not available in this build";
+#else
+  const std::string image_path = std::string(XFEAT_CPP_SOURCE_DIR) + "/image/sample1.jpg";
+  cv::Mat image = cv::imread(image_path, cv::IMREAD_COLOR);
+  if (image.empty()) {
+    GTEST_SKIP() << "DA3 smoke image is unavailable: " << image_path;
+  }
+
+  xfeat::DepthAnythingV3TRT::Params params;
+  params.engine_path = engine;
+  xfeat::DepthAnythingV3TRT model(params);
+  ASSERT_TRUE(model.has_pose_inputs());
+
+  xfeat::CameraIntrinsics intrinsics;
+  intrinsics.fx = static_cast<double>(std::max(image.cols, image.rows));
+  intrinsics.fy = intrinsics.fx;
+  intrinsics.cx = 0.5 * static_cast<double>(image.cols - 1);
+  intrinsics.cy = 0.5 * static_cast<double>(image.rows - 1);
+  intrinsics.width = image.cols;
+  intrinsics.height = image.rows;
+  const std::vector<cv::Mat> images{image, image};
+  const std::vector<xfeat::CameraIntrinsics> batch_intrinsics{intrinsics, intrinsics};
+  std::vector<cv::Matx44f> input_world_to_camera{cv::Matx44f::eye(), cv::Matx44f::eye()};
+  input_world_to_camera[1](0, 3) = -10.0f;
+
+  const auto results = model.infer_multi_view(images, batch_intrinsics, input_world_to_camera);
+  ASSERT_EQ(results.size(), 2u);
+  ASSERT_TRUE(results[0].predicted_world_to_camera.has_value());
+  ASSERT_TRUE(results[1].predicted_world_to_camera.has_value());
+  const double predicted_baseline =
+      cv::norm(detail::cameraCenterFromWorldToCamera(*results[1].predicted_world_to_camera) -
+               detail::cameraCenterFromWorldToCamera(*results[0].predicted_world_to_camera));
+  ASSERT_TRUE(std::isfinite(predicted_baseline));
+  ASSERT_GT(predicted_baseline, 1e-6);
+  const double expected_scale = predicted_baseline / 10.0;
+  for (const auto& result : results) {
+    EXPECT_EQ(result.depth.type(), CV_32FC1);
+    EXPECT_EQ(result.depth.size(), image.size());
+    EXPECT_NEAR(result.metadata.pose_scale, expected_scale, expected_scale * 1e-5);
+    EXPECT_EQ(result.metadata.pose_scaled, std::abs(expected_scale - 1.0) > 1e-6);
   }
 #endif
 }

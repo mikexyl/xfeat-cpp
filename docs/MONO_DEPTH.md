@@ -72,8 +72,10 @@ std::vector<cv::Matx44f> world_to_camera = {T_c0_w, T_c1_w, T_c2_w};
 std::vector<xfeat::MonoDepthResult> results = depth.infer_multi_view(views, intrinsics, world_to_camera);
 ```
 
-The runtime scales intrinsics to the resized model image before inference. For pose-conditioned engines, it also reads
-DA3's predicted extrinsics output and applies a pose-scale depth correction against the input extrinsics.
+The runtime scales intrinsics to the resized model image before inference. For
+pose-conditioned engines, it also reads DA3's predicted extrinsics output and
+applies a pose-scale depth correction against the input extrinsics. No-pose
+engines return native DA3 depth and extrinsics without that correction.
 
 ## Example CLI
 

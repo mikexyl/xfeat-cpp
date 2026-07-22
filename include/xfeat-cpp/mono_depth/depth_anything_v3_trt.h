@@ -42,6 +42,7 @@ class DepthAnythingV3TRT : public MonoDepth {
 
   cv::Size input_size() const;
   bool has_camera_inputs() const;
+  bool has_pose_inputs() const;
   const Params& params() const;
 
  private:

@@ -23,6 +23,8 @@ struct MonoDepthMetadata {
   double scale_y = 1.0;
   double focal_scale = 1.0;
   bool focal_scaled = false;
+  // Ratio of the DA3-predicted camera baseline to the supplied camera
+  // baseline. Pose-conditioned inference divides metric depth by this value.
   double pose_scale = 1.0;
   bool pose_scaled = false;
   bool sky_filled = false;
@@ -40,6 +42,8 @@ struct MonoDepthResult {
   cv::Mat confidence;      // CV_32FC1, resized to the input image size, may be empty.
   cv::Mat raw_confidence;  // CV_32FC1, raw confidence output at model size, may be empty.
   cv::Mat sky_mask;        // CV_8UC1, non-zero pixels are sky, resized to the input image size.
+  // DA3-predicted world-to-camera extrinsic for this view, when available.
+  std::optional<cv::Matx44f> predicted_world_to_camera;
   MonoDepthMetadata metadata;
 };
 
