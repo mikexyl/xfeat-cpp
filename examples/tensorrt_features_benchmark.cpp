@@ -6,16 +6,22 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdlib>
+#include <cstring>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <memory>
 #include <numeric>
 #include <opencv2/imgcodecs.hpp>
+#include <opencv2/imgproc.hpp>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <vector>
 
 #include "xfeat-cpp/lighterglue_trt.h"
+#include "xfeat-cpp/place_recognition/jist_trt.h"
+#include "xfeat-cpp/tensorrt/detail/trt_engine.h"
 #include "xfeat-cpp/xfeat_trt.h"
 
 #ifdef HAVE_TENSORRT
@@ -25,6 +31,7 @@ namespace {
 struct Options {
   std::string xfeat_engine;
   std::string lighterglue_engine;
+  std::string jist_engine;
   std::vector<std::string> image_paths;
   std::string json_out;
   int top_k = 500;
@@ -44,6 +51,13 @@ struct TimingStats {
   double stddev_ms = 0.0;
 };
 
+struct JistBreakdownStats {
+  TimingStats preprocess;
+  TimingStats engine_wrapper;
+  TimingStats postprocess;
+  TimingStats total;
+};
+
 struct MemorySnapshot {
   size_t free_bytes = 0;
   size_t total_bytes = 0;
@@ -61,6 +75,7 @@ void printUsage(const char* executable) {
             << "  --warmup N      Warmup calls for each stage (default: 20)\n"
             << "  --runs N        Measured calls for each stage (default: 200)\n"
             << "  --json-out PATH Optional benchmark JSON output path\n"
+            << "  --jist-engine PATH  Also benchmark a JIST TensorRT engine\n"
             << "  --verbose       Enable TensorRT metadata logging\n";
 }
 
@@ -80,6 +95,8 @@ Options parseOptions(int argc, char** argv) {
       options.xfeat_engine = requireValue(argc, argv, index, argument);
     } else if (argument == "--lighterglue-engine") {
       options.lighterglue_engine = requireValue(argc, argv, index, argument);
+    } else if (argument == "--jist-engine") {
+      options.jist_engine = requireValue(argc, argv, index, argument);
     } else if (argument == "--top-k") {
       options.top_k = std::stoi(requireValue(argc, argv, index, argument));
     } else if (argument == "--warmup") {
@@ -160,6 +177,70 @@ size_t matchCount(const std::vector<std::vector<int>>& matches) {
   size_t count = 0;
   for (const auto& indices : matches) count += indices.size();
   return count;
+}
+
+std::vector<float> prepareJistInput(const std::vector<cv::Mat>& sequence, int width, int height) {
+  const size_t plane = static_cast<size_t>(height) * width;
+  std::vector<float> tensor(sequence.size() * 3 * plane);
+  for (size_t sequence_index = 0; sequence_index < sequence.size(); ++sequence_index) {
+    cv::Mat color;
+    cv::cvtColor(sequence[sequence_index], color, cv::COLOR_BGR2RGB);
+    cv::resize(color, color, cv::Size(width, height));
+    color.convertTo(color, CV_32F, 1.0 / 255.0);
+    std::vector<cv::Mat> channels;
+    cv::split(color, channels);
+    for (int channel = 0; channel < 3; ++channel) {
+      const size_t offset = (sequence_index * 3 + static_cast<size_t>(channel)) * plane;
+      std::memcpy(tensor.data() + offset, channels[channel].ptr<float>(), plane * sizeof(float));
+    }
+  }
+  return tensor;
+}
+
+JistBreakdownStats timeJistBreakdown(int runs,
+                                     const std::string& engine_path,
+                                     const std::vector<cv::Mat>& sequence,
+                                     int width,
+                                     int height) {
+  xfeat::trt_detail::Engine engine(engine_path);
+  const std::string input_name = engine.input_names().front();
+  const std::string output_name = engine.output_names().front();
+  const std::vector<int64_t> input_shape = engine.tensor_shape(input_name);
+  std::vector<double> preprocess_ms;
+  std::vector<double> engine_ms;
+  std::vector<double> postprocess_ms;
+  std::vector<double> total_ms;
+  preprocess_ms.reserve(static_cast<size_t>(runs));
+  engine_ms.reserve(static_cast<size_t>(runs));
+  postprocess_ms.reserve(static_cast<size_t>(runs));
+  total_ms.reserve(static_cast<size_t>(runs));
+
+  for (int run = 0; run < runs; ++run) {
+    synchronizeCuda();
+    const auto start = std::chrono::steady_clock::now();
+    const std::vector<float> input = prepareJistInput(sequence, width, height);
+    const auto after_preprocess = std::chrono::steady_clock::now();
+    const auto outputs = engine.run({{input_name, input_shape, input.data(), input.size() * sizeof(float)}});
+    const auto after_engine = std::chrono::steady_clock::now();
+    const std::vector<float> values = xfeat::trt_detail::find_output(outputs, output_name).values<float>();
+    cv::Mat descriptor(1, static_cast<int>(values.size()), CV_32F);
+    std::memcpy(descriptor.ptr<float>(), values.data(), values.size() * sizeof(float));
+    const double norm = cv::norm(descriptor, cv::NORM_L2);
+    if (norm > 1e-8) descriptor /= norm;
+    const auto end = std::chrono::steady_clock::now();
+
+    preprocess_ms.push_back(std::chrono::duration<double, std::milli>(after_preprocess - start).count());
+    engine_ms.push_back(std::chrono::duration<double, std::milli>(after_engine - after_preprocess).count());
+    postprocess_ms.push_back(std::chrono::duration<double, std::milli>(end - after_engine).count());
+    total_ms.push_back(std::chrono::duration<double, std::milli>(end - start).count());
+  }
+
+  return {
+      computeStats(std::move(preprocess_ms)),
+      computeStats(std::move(engine_ms)),
+      computeStats(std::move(postprocess_ms)),
+      computeStats(std::move(total_ms)),
+  };
 }
 
 double bytesToMiB(size_t bytes) { return static_cast<double>(bytes) / (1024.0 * 1024.0); }
@@ -245,6 +326,18 @@ int main(int argc, char** argv) {
     xfeat::LighterGlueTRT matcher(options.lighterglue_engine, options.verbose);
     synchronizeCuda();
     const auto lighterglue_load_end = std::chrono::steady_clock::now();
+    std::unique_ptr<xfeat::JistTRT> jist;
+    double jist_load_ms = 0.0;
+    if (!options.jist_engine.empty()) {
+      xfeat::JistTRT::Params params;
+      params.model_path = options.jist_engine;
+      params.verbose = options.verbose;
+      const auto jist_load_start = std::chrono::steady_clock::now();
+      jist = std::make_unique<xfeat::JistTRT>(params);
+      synchronizeCuda();
+      const auto jist_load_end = std::chrono::steady_clock::now();
+      jist_load_ms = std::chrono::duration<double, std::milli>(jist_load_end - jist_load_start).count();
+    }
     const MemorySnapshot after_models = queryCudaMemory();
     const double xfeat_load_ms = std::chrono::duration<double, std::milli>(xfeat_load_end - xfeat_load_start).count();
     const double lighterglue_load_ms =
@@ -254,6 +347,15 @@ int main(int argc, char** argv) {
     xfeat::DetectionResult detection1 = extractor.detect_and_compute(image1, options.top_k);
     std::vector<std::vector<int>> matches = matcher.match(detection0, size0, detection1, size1);
     const size_t canonical_matches = matchCount(matches);
+    std::vector<cv::Mat> jist_sequence;
+    cv::Mat jist_descriptor;
+    if (jist) {
+      jist_sequence.reserve(static_cast<size_t>(jist->get_seq_length()));
+      for (int index = 0; index < jist->get_seq_length(); ++index) {
+        jist_sequence.push_back(index % 2 == 0 ? image0 : image1);
+      }
+      jist_descriptor = jist->infer(jist_sequence);
+    }
 
     for (int i = 0; i < options.warmup; ++i) {
       const cv::Mat& image = (i % 2 == 0) ? image0 : image1;
@@ -268,6 +370,9 @@ int main(int argc, char** argv) {
       auto first = extractor.detect_and_compute(image0, options.top_k);
       auto second = extractor.detect_and_compute(image1, options.top_k);
       matches = matcher.match(first, size0, second, size1);
+    }
+    if (jist) {
+      for (int i = 0; i < options.warmup; ++i) jist_descriptor = jist->infer(jist_sequence);
     }
     synchronizeCuda();
     const MemorySnapshot after_warmup = queryCudaMemory();
@@ -285,20 +390,38 @@ int main(int argc, char** argv) {
       auto second = extractor.detect_and_compute(image1, options.top_k);
       matches = matcher.match(first, size0, second, size1);
     });
+    std::optional<TimingStats> jist_timing;
+    std::optional<JistBreakdownStats> jist_breakdown;
+    if (jist) {
+      jist_timing = timeCalls(options.runs, [&](int) { jist_descriptor = jist->infer(jist_sequence); });
+      jist_breakdown = timeJistBreakdown(
+          options.runs, options.jist_engine, jist_sequence, jist->get_img_width(), jist->get_img_height());
+    }
     synchronizeCuda();
     const MemorySnapshot after_benchmark = queryCudaMemory();
 
-    std::cout << "\nXFeat/LighterGlue TensorRT benchmark\n";
+    std::cout << "\nXFeat/LighterGlue" << (jist ? "/JIST" : "") << " TensorRT benchmark\n";
     std::cout << "  images=" << image0.cols << 'x' << image0.rows << ", " << image1.cols << 'x' << image1.rows
               << "; model_input=" << extractor.input_width() << 'x' << extractor.input_height() << '\n';
     std::cout << "  top_k=" << options.top_k << ", keypoints=" << detection0.keypoints.rows << '/'
               << detection1.keypoints.rows << ", matches=" << canonical_matches << '\n';
     std::cout << "  warmup=" << options.warmup << ", runs=" << options.runs << '\n';
     std::cout << "  engine_load_ms: xfeat=" << std::fixed << std::setprecision(3) << xfeat_load_ms
-              << ", lighterglue=" << lighterglue_load_ms << '\n';
+              << ", lighterglue=" << lighterglue_load_ms;
+    if (jist) std::cout << ", jist=" << jist_load_ms;
+    std::cout << '\n';
     printStats("xfeat_per_image", xfeat_timing, "images_per_second", 1.0);
     printStats("lighterglue_per_pair", lighterglue_timing, "pairs_per_second", 1.0);
     printStats("pipeline_two_images_plus_match", pipeline_timing, "pairs_per_second", 1.0);
+    if (jist_timing) {
+      std::cout << "  jist_sequence=" << jist_sequence.size() << " frames, descriptor_dim=" << jist_descriptor.cols
+                << ", descriptor_l2=" << cv::norm(jist_descriptor, cv::NORM_L2) << '\n';
+      printStats("jist_per_sequence", *jist_timing, "sequences_per_second", 1.0);
+      printStats("jist_breakdown_preprocess", jist_breakdown->preprocess, "sequences_per_second", 1.0);
+      printStats("jist_breakdown_engine_wrapper", jist_breakdown->engine_wrapper, "sequences_per_second", 1.0);
+      printStats("jist_breakdown_postprocess", jist_breakdown->postprocess, "sequences_per_second", 1.0);
+      printStats("jist_breakdown_total", jist_breakdown->total, "sequences_per_second", 1.0);
+    }
     std::cout << "  cuda_memory_mib: before_models=" << std::fixed << std::setprecision(1)
               << bytesToMiB(before_models.usedBytes()) << ", after_models=" << bytesToMiB(after_models.usedBytes())
               << " (+" << usedDeltaMiB(after_models, before_models)
@@ -312,6 +435,7 @@ int main(int argc, char** argv) {
       out << "{\n";
       out << "  \"xfeat_engine\": \"" << jsonEscape(options.xfeat_engine) << "\",\n";
       out << "  \"lighterglue_engine\": \"" << jsonEscape(options.lighterglue_engine) << "\",\n";
+      if (jist) out << "  \"jist_engine\": \"" << jsonEscape(options.jist_engine) << "\",\n";
       out << "  \"images\": [\"" << jsonEscape(options.image_paths[0]) << "\", \"" << jsonEscape(options.image_paths[1])
           << "\"],\n";
       out << "  \"model_input\": [" << extractor.input_width() << ", " << extractor.input_height() << "],\n";
@@ -320,11 +444,22 @@ int main(int argc, char** argv) {
       out << "  \"matches\": " << canonical_matches << ",\n";
       out << "  \"warmup\": " << options.warmup << ",\n";
       out << "  \"runs\": " << options.runs << ",\n";
-      out << "  \"engine_load_ms\": {\"xfeat\": " << xfeat_load_ms << ", \"lighterglue\": " << lighterglue_load_ms
-          << "},\n";
+      out << "  \"engine_load_ms\": {\"xfeat\": " << xfeat_load_ms << ", \"lighterglue\": " << lighterglue_load_ms;
+      if (jist) out << ", \"jist\": " << jist_load_ms;
+      out << "},\n";
       writeStatsJson(out, "xfeat_per_image_ms", xfeat_timing, true);
       writeStatsJson(out, "lighterglue_per_pair_ms", lighterglue_timing, true);
       writeStatsJson(out, "pipeline_two_images_plus_match_ms", pipeline_timing, true);
+      if (jist_timing) {
+        out << "  \"jist_sequence_length\": " << jist_sequence.size() << ",\n";
+        out << "  \"jist_descriptor_dim\": " << jist_descriptor.cols << ",\n";
+        out << "  \"jist_descriptor_l2\": " << cv::norm(jist_descriptor, cv::NORM_L2) << ",\n";
+        writeStatsJson(out, "jist_per_sequence_ms", *jist_timing, true);
+        writeStatsJson(out, "jist_breakdown_preprocess_ms", jist_breakdown->preprocess, true);
+        writeStatsJson(out, "jist_breakdown_engine_wrapper_ms", jist_breakdown->engine_wrapper, true);
+        writeStatsJson(out, "jist_breakdown_postprocess_ms", jist_breakdown->postprocess, true);
+        writeStatsJson(out, "jist_breakdown_total_ms", jist_breakdown->total, true);
+      }
       out << "  \"cuda_memory_mib\": {\"before_models\": " << bytesToMiB(before_models.usedBytes())
           << ", \"after_models\": " << bytesToMiB(after_models.usedBytes())
           << ", \"after_warmup\": " << bytesToMiB(after_warmup.usedBytes())

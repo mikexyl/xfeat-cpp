@@ -16,6 +16,8 @@ g++ \
   src/tensorrt/trt_engine.cpp \
   src/xfeat_trt.cpp \
   src/lighterglue_trt.cpp \
+  src/place_recognition/place_recognizer.cpp \
+  src/place_recognition/jist_trt.cpp \
   include/xfeat-cpp/nms/anms/anms.cpp \
   examples/tensorrt_features_benchmark.cpp \
   -o "$output" \

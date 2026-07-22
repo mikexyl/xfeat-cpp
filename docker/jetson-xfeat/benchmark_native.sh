@@ -24,6 +24,12 @@ for path in "$benchmark_bin" \
   fi
 done
 
+jist_args=()
+jist_engine="$artifact_dir/JIST_r18_512_seqgem_simplified_fp16.engine"
+if [[ -f "$jist_engine" ]]; then
+  jist_args=(--jist-engine "$jist_engine")
+fi
+
 mkdir -p "$results_dir"
 timestamp=$(date -u +%Y%m%dT%H%M%SZ)
 json_path="$results_dir/xfeat-lightglue-fp16-${timestamp}.json"
@@ -44,6 +50,7 @@ trap cleanup EXIT INT TERM
   --warmup "$warmup" \
   --runs "$runs" \
   --json-out "$json_path" \
+  "${jist_args[@]}" \
   "$1" "$2"
 
 echo "Benchmark JSON: $json_path"

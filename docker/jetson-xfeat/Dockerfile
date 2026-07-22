@@ -15,6 +15,8 @@ COPY include/xfeat-cpp/ include/xfeat-cpp/
 COPY src/tensorrt/trt_engine.cpp src/tensorrt/trt_engine.cpp
 COPY src/xfeat_trt.cpp src/xfeat_trt.cpp
 COPY src/lighterglue_trt.cpp src/lighterglue_trt.cpp
+COPY src/place_recognition/place_recognizer.cpp src/place_recognition/place_recognizer.cpp
+COPY src/place_recognition/jist_trt.cpp src/place_recognition/jist_trt.cpp
 COPY examples/tensorrt_features_benchmark.cpp examples/tensorrt_features_benchmark.cpp
 
 RUN c++ \
@@ -23,6 +25,8 @@ RUN c++ \
       src/tensorrt/trt_engine.cpp \
       src/xfeat_trt.cpp \
       src/lighterglue_trt.cpp \
+      src/place_recognition/place_recognizer.cpp \
+      src/place_recognition/jist_trt.cpp \
       include/xfeat-cpp/nms/anms/anms.cpp \
       examples/tensorrt_features_benchmark.cpp \
       -o /usr/local/bin/tensorrt_features_benchmark \

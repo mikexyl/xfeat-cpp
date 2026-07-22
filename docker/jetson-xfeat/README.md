@@ -17,14 +17,20 @@ the fully offline host-native path is also available:
 ```bash
 docker/jetson-xfeat/build_native_benchmark.sh
 docker/jetson-xfeat/build_engines_native.sh
+docker/jetson-xfeat/build_jist_engine_native.sh
 docker/jetson-xfeat/benchmark_native.sh image/sample1.jpg image/sample2.jpg
 ```
+
+When `JIST_r18_512_seqgem_simplified_fp16.engine` is present in the artifact
+directory, the native benchmark also measures one five-frame JIST sequence per
+call. The two input images are alternated to form the test sequence.
 
 Copy these portable models into `artifacts/xfeat-lightglue/`:
 
 ```text
 xfeat_320x224.onnx
 lg_320x224_dyn.onnx
+JIST_r18_512_seqgem_simplified.onnx
 ```
 
 For repeatable peak-performance results, enable the same MAXN and static-clock
