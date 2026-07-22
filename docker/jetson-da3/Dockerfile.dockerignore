@@ -1,0 +1,13 @@
+**
+!docker/
+!docker/jetson-da3/
+!docker/jetson-da3/Dockerfile
+!include/
+!include/xfeat-cpp/
+!include/xfeat-cpp/mono_depth/
+!include/xfeat-cpp/mono_depth/**
+!src/
+!src/mono_depth/
+!src/mono_depth/depth_anything_v3_trt.cpp
+!examples/
+!examples/mono_depth_benchmark.cpp
