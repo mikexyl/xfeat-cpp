@@ -30,6 +30,101 @@ MixVPR used the same 640×480 inputs, resized them to 320×320 with ImageNet RGB
 normalization, and returned a 4096-dimensional descriptor with an L2 norm of
 1.0.
 
+## MAXN_SUPER JIST/MixVPR rerun
+
+JIST and MixVPR were rerun on 2026-07-23 after the board was changed to
+`MAXN_SUPER`. Fresh FP16 engines were built directly on the Jetson with a fresh
+timing cache. Merely changing an `nvpmodel` power mode does not ordinarily
+require an engine rebuild. In this case, however, TensorRT warned that the
+regular-MAXN plans came from a different device model after the board changed
+to the Super hardware configuration. The old plans passed a smoke test, but
+fresh plans were used so the benchmark did not rely on that unsupported path
+and TensorRT could select tactics at the new clock limits.
+
+The focused benchmark loaded only JIST and MixVPR. It used the same two
+640×480 sample images and native C++ backends as the original test, with 20
+warmup calls and 200 measured calls per model in each of three trials. JIST
+again received a five-frame sequence alternating the two images. Clocks
+remained dynamic: CPU governors were `schedutil`, the GPU ranged from 306 to
+1173 MHz, and EMC ranged from 204 to 3199 MHz. `jetson_clocks` was not enabled.
+
+### MAXN_SUPER application results
+
+| Trial | JIST mean / median / p95 (ms) | MixVPR mean / median / p95 (ms) |
+|---:|---:|---:|
+| 1 | 25.065 / 25.200 / 26.838 | 6.375 / 6.495 / 6.639 |
+| 2 | 25.156 / 25.327 / 26.662 | 6.509 / 6.521 / 6.595 |
+| 3 | 25.813 / 25.777 / 27.391 | 6.339 / 6.263 / 6.575 |
+| Three-trial aggregate | **25.345 / 25.435 / 26.964** | **6.408 / 6.427 / 6.603** |
+
+The aggregate throughputs were **39.46 JIST sequences/s** and **156.06
+MixVPR images/s**. Both outputs had the expected dimensions and an L2 norm of
+1.0.
+
+The following comparison uses the original dynamic-clock regular-MAXN results
+as the baseline. Lower latency is better.
+
+| Metric | Regular MAXN | MAXN_SUPER | Change |
+|---|---:|---:|---:|
+| JIST C++ mean latency | 24.855 ms | 25.345 ms | +2.0% |
+| MixVPR C++ mean latency | 7.690 ms | 6.408 ms | -16.7% |
+| JIST raw host latency | 6.932 ms | 5.808 ms | -16.2% |
+| JIST raw GPU compute | 6.446 ms | 5.266 ms | -18.3% |
+| MixVPR raw host latency | 3.590 ms | 2.954 ms | -17.7% |
+| MixVPR raw GPU compute | 3.519 ms | 2.881 ms | -18.1% |
+
+The raw engines are about 18% faster and deliver about 22% more throughput in
+MAXN_SUPER. MixVPR carries most of that improvement through its full C++ path.
+JIST's end-to-end latency is effectively unchanged because five-image CPU
+preprocessing plus the current wrapper's per-call allocation and transfers
+remain the larger part of the call. The application comparison is also not a
+perfect isolated power-mode experiment: the original binary loaded all four
+models, whereas this rerun deliberately used a focused two-model process.
+
+### MAXN_SUPER raw TensorRT results
+
+Each engine ran for 10 seconds after a 2-second warmup with spin-wait and normal
+host/device transfers.
+
+| Metric | JIST five-frame | MixVPR |
+|---|---:|---:|
+| Throughput | 189.76 queries/s | 346.86 queries/s |
+| Mean / median / p95 host latency | 5.808 / 5.808 / 5.824 ms | 2.954 / 2.954 / 2.962 ms |
+| Mean / p95 GPU compute time | 5.266 / 5.280 ms | 2.881 / 2.887 ms |
+| Mean H2D latency | 0.535 ms | 0.067 ms |
+| Mean D2H latency | 0.007 ms | 0.006 ms |
+
+Both plans deserialized and completed without TensorRT's cross-device warning.
+
+### MAXN_SUPER engine metadata
+
+The engines are stored on the Jetson under
+`/home/mikexyl/xfeat-trt-benchmark/artifacts/xfeat-lightglue-maxn-super/`.
+They used FP16, builder optimization level 5, eight timing samples, and a 4096
+MiB workspace.
+
+| Engine | Size | SHA-256 | Build time |
+|---|---:|---|---:|
+| `JIST_r18_512_seqgem_simplified_fp16.engine` | 23,328,716 bytes | `023ac7bf52db9f13794d2d30f02d1d3c56c045ba318c147067b7fa7a0d62c439` | 272.1 s |
+| `mixvpr_resnet50_4096d_fp16.engine` | 22,733,316 bytes | `bb79656624d805ac94fc4fb0653ccbf546f683b95987cbeb16da0a12997eda4e` | 220.1 s |
+
+The final timing cache contained 2,245 entries and occupied 2,842,380 bytes.
+
+### MAXN_SUPER power and thermal telemetry
+
+`tegrastats` was sampled every 100 ms. Application telemetry covers all three
+trials and includes model loading and warmup; each raw row covers one isolated
+`trtexec` run.
+
+| Test | Mean / peak board input power | Mean / peak GPU load | Peak GPU temperature |
+|---|---:|---:|---:|
+| Three application trials | 9.88 / 14.56 W | 36.1 / 89% | 53.3 °C |
+| Raw JIST | 27.30 / 28.51 W | 97.7 / 99% | 59.1 °C |
+| Raw MixVPR | 23.06 / 23.38 W | 95.5 / 98% | 59.8 °C |
+
+The raw logs and per-trial application logs are retained on the Jetson at
+`/home/mikexyl/xfeat-trt-benchmark/benchmark-results/maxn-super-vpr-20260723/`.
+
 ## Test system
 
 | Component | Configuration |
