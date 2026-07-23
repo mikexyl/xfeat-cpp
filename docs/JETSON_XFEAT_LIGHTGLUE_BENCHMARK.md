@@ -96,6 +96,26 @@ host/device transfers.
 
 Both plans deserialized and completed without TensorRT's cross-device warning.
 
+### MAXN_SUPER CUDA-visible memory usage
+
+Jetson Orin uses unified system memory, so these are CUDA-visible RAM deltas,
+not allocations from a separate pool of dedicated VRAM. Each model was
+measured in three isolated processes relative to a baseline taken after CUDA
+context initialization. The steady value was sampled after 50 inference calls;
+the peak was polled concurrently during those calls.
+
+| Model | After engine load, mean (range) | After warmup, mean (range) | Maximum sampled delta |
+|---|---:|---:|---:|
+| JIST | 49.0 MiB (42.4–53.6) | 106.4 MiB (104.2–110.3) | 114.5 MiB |
+| MixVPR | 55.7 MiB (53.1–59.0) | 142.4 MiB (140.0–146.2) | 146.2 MiB |
+
+The post-warmup figures are the practical full-process footprints and include
+TensorRT, CUDA's lazily loaded kernels and caches, and driver allocations. For
+comparison, `trtexec` reported only 33.75 MiB of TensorRT execution-context
+device memory for JIST and 8.20 MiB for MixVPR. The per-call float32 input
+buffers are 8.44 MiB and 1.17 MiB, respectively, and are included in the
+sampled peaks. The board exposed 15,598 MiB total to CUDA during these tests.
+
 ### MAXN_SUPER engine metadata
 
 The engines are stored on the Jetson under
@@ -122,7 +142,7 @@ trials and includes model loading and warmup; each raw row covers one isolated
 | Raw JIST | 27.30 / 28.51 W | 97.7 / 99% | 59.1 °C |
 | Raw MixVPR | 23.06 / 23.38 W | 95.5 / 98% | 59.8 °C |
 
-The raw logs and per-trial application logs are retained on the Jetson at
+The raw, per-trial application, and memory logs are retained on the Jetson at
 `/home/mikexyl/xfeat-trt-benchmark/benchmark-results/maxn-super-vpr-20260723/`.
 
 ## Test system
