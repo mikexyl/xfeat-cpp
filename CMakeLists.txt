@@ -24,6 +24,7 @@ find_package(OpenMP REQUIRED)
 # Try to find TensorRT (optional for TensorRT-backed depth modules)
 find_library(TENSORRT_LIBRARY nvinfer
     PATHS /usr/local/lib /usr/lib
+          /usr/lib/aarch64-linux-gnu
           /usr/lib/x86_64-linux-gnu
           /usr/local/TensorRT/lib /usr/local/tensorrt/lib
           /opt/TensorRT/lib /opt/tensorrt/lib
@@ -31,6 +32,7 @@ find_library(TENSORRT_LIBRARY nvinfer
 
 find_path(TENSORRT_INCLUDE_DIR NvInfer.h
     PATHS /usr/include /usr/local/include
+          /usr/include/aarch64-linux-gnu
           /usr/include/x86_64-linux-gnu
           /usr/local/TensorRT/include /usr/local/tensorrt/include
           /opt/TensorRT/include /opt/tensorrt/include
@@ -83,7 +85,10 @@ else()
     set(TENSORRT_FEATURE_SOURCES)
 endif()
 
-set(CMAKE_CUDA_ARCHITECTURES 89)
+if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
+    set(CMAKE_CUDA_ARCHITECTURES native)
+endif()
+message(STATUS "xfeat-cpp CUDA architectures: ${CMAKE_CUDA_ARCHITECTURES}")
 
 enable_language(CUDA)
 
@@ -160,8 +165,8 @@ endif()
 
 add_subdirectory(thirdparty/lightstereo/deploy/cpp)
 
-# set ENABLE_SAMPLES for libsgm
-set(ENABLE_SAMPLES ON CACHE BOOL "Build samples" FORCE)
+# Keep dependency samples aligned with the workspace-level examples option.
+set(ENABLE_SAMPLES ${XFEAT_BUILD_EXAMPLES} CACHE BOOL "Build samples" FORCE)
 
 # Enable OpenCV wrapper for libsgm BEFORE adding the subdirectory
 set(BUILD_OPENCV_WRAPPER ON CACHE BOOL "Make library compatible with cv::Mat and cv::cuda::GpuMat of OpenCV" FORCE)
