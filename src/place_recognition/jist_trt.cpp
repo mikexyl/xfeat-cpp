@@ -28,31 +28,53 @@ JistTRT::JistTRT(const Params& params)
       normalize_output_(params.normalize_output) {
   const auto input_names = engine_->input_names();
   const auto output_names = engine_->output_names();
-  if (input_names.size() != 1 || output_names.size() != 1) {
-    throw std::runtime_error("JistTRT requires exactly one input and one output tensor");
+  if (input_names.size() != 1 || output_names.empty() || output_names.size() > 2) {
+    throw std::runtime_error("JistTRT requires one input and one or two output tensors");
   }
   input_name_ = input_names.front();
-  output_name_ = output_names.front();
-  if (engine_->tensor_type(input_name_) != trt_detail::DataType::kFloat32 ||
-      engine_->tensor_type(output_name_) != trt_detail::DataType::kFloat32) {
-    throw std::runtime_error("JistTRT requires float32 engine I/O tensors");
+  if (engine_->tensor_type(input_name_) != trt_detail::DataType::kFloat32) {
+    throw std::runtime_error("JistTRT requires float32 engine input");
   }
 
   const auto input_shape = engine_->tensor_shape(input_name_);
-  const auto output_shape = engine_->tensor_shape(output_name_);
   if (input_shape.size() != 5 || input_shape[0] != 1 || input_shape[2] != 3) {
     throw std::runtime_error("JistTRT input must have shape [1, sequence, 3, height, width]");
-  }
-  if (output_shape.size() != 2 || output_shape[0] != 1) {
-    throw std::runtime_error("JistTRT output must have shape [1, descriptor_dim]");
   }
 
   seq_length_ = checkedDimension(input_shape, 1, "sequence");
   const int engine_height = checkedDimension(input_shape, 3, "height");
   const int engine_width = checkedDimension(input_shape, 4, "width");
-  descriptor_dim_ = checkedDimension(output_shape, 1, "descriptor");
   if (engine_height != img_height_ || engine_width != img_width_) {
     throw std::runtime_error("JistTRT engine image dimensions do not match configured dimensions");
+  }
+
+  for (const std::string& name : output_names) {
+    if (engine_->tensor_type(name) != trt_detail::DataType::kFloat32) {
+      throw std::runtime_error("JistTRT requires float32 engine outputs");
+    }
+    const auto shape = engine_->tensor_shape(name);
+    if (shape.size() != 2) {
+      throw std::runtime_error("JistTRT outputs must be rank-two descriptor tensors");
+    }
+    const int output_descriptor_dim = checkedDimension(shape, 1, "descriptor");
+    if (shape[0] == 1 && output_name_.empty()) {
+      output_name_ = name;
+      if (descriptor_dim_ != 0 && descriptor_dim_ != output_descriptor_dim) {
+        throw std::runtime_error("JistTRT sequence and frame descriptor dimensions do not match");
+      }
+      descriptor_dim_ = output_descriptor_dim;
+    } else if (shape[0] == seq_length_ && frame_output_name_.empty()) {
+      frame_output_name_ = name;
+      if (descriptor_dim_ != 0 && descriptor_dim_ != output_descriptor_dim) {
+        throw std::runtime_error("JistTRT sequence and frame descriptor dimensions do not match");
+      }
+      descriptor_dim_ = output_descriptor_dim;
+    } else {
+      throw std::runtime_error("JistTRT output shapes must be [1, D] and optionally [sequence, D]");
+    }
+  }
+  if (output_name_.empty()) {
+    throw std::runtime_error("JistTRT engine does not expose a [1, descriptor_dim] sequence output");
   }
 }
 
@@ -99,20 +121,50 @@ void JistTRT::normalize_descriptor(cv::Mat& descriptor) const {
   if (norm > 1e-8) descriptor /= norm;
 }
 
-cv::Mat JistTRT::infer(const std::vector<cv::Mat>& image_sequence) {
+JistTRT::InferenceResult JistTRT::infer_all(const std::vector<cv::Mat>& image_sequence) {
   std::vector<float> input = prepare_input_tensor(image_sequence);
   const std::vector<int64_t> shape = {1, seq_length_, 3, img_height_, img_width_};
   const auto outputs =
       engine_->run({trt_detail::InputTensor{input_name_, shape, input.data(), input.size() * sizeof(float)}});
+
+  InferenceResult result;
   const auto& output = trt_detail::find_output(outputs, output_name_);
   if (output.type != trt_detail::DataType::kFloat32 || output.shape != std::vector<int64_t>({1, descriptor_dim_})) {
     throw std::runtime_error("JistTRT returned an unexpected output tensor");
   }
   const std::vector<float> values = output.values<float>();
-  cv::Mat descriptor(1, descriptor_dim_, CV_32F);
-  std::memcpy(descriptor.ptr<float>(), values.data(), values.size() * sizeof(float));
-  if (normalize_output_) normalize_descriptor(descriptor);
-  return descriptor;
+  result.sequence_descriptor = cv::Mat(1, descriptor_dim_, CV_32F);
+  std::memcpy(result.sequence_descriptor.ptr<float>(), values.data(), values.size() * sizeof(float));
+  if (normalize_output_) normalize_descriptor(result.sequence_descriptor);
+
+  if (!frame_output_name_.empty()) {
+    const auto& frame_output = trt_detail::find_output(outputs, frame_output_name_);
+    if (frame_output.type != trt_detail::DataType::kFloat32 ||
+        frame_output.shape != std::vector<int64_t>({seq_length_, descriptor_dim_})) {
+      throw std::runtime_error("JistTRT returned an unexpected frame descriptor tensor");
+    }
+    const std::vector<float> frame_values = frame_output.values<float>();
+    result.frame_descriptors = cv::Mat(seq_length_, descriptor_dim_, CV_32F);
+    std::memcpy(result.frame_descriptors.ptr<float>(), frame_values.data(), frame_values.size() * sizeof(float));
+    if (normalize_output_) {
+      for (int frame = 0; frame < seq_length_; ++frame) {
+        cv::Mat row = result.frame_descriptors.row(frame);
+        normalize_descriptor(row);
+      }
+    }
+  }
+  return result;
+}
+
+cv::Mat JistTRT::infer(const std::vector<cv::Mat>& image_sequence) {
+  return infer_all(image_sequence).sequence_descriptor;
+}
+
+JistTRT::InferenceResult JistTRT::infer_with_frame_descriptors(const std::vector<cv::Mat>& image_sequence) {
+  if (!has_frame_descriptors()) {
+    throw std::runtime_error("JistTRT engine does not expose per-frame descriptors");
+  }
+  return infer_all(image_sequence);
 }
 
 cv::Mat JistTRT::infer_batch(const std::vector<std::vector<cv::Mat>>& batch_sequences) {

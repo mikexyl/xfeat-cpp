@@ -66,6 +66,16 @@ add_executable(skyseg_example skyseg_example.cpp)
 target_link_libraries(skyseg_example xfeat-cpp ${OpenCV_LIBS} nvinfer cudart)
 
 if(TENSORRT_AVAILABLE)
+    add_executable(jist_mixvpr_recall_example jist_mixvpr_recall_example.cpp)
+    target_link_libraries(jist_mixvpr_recall_example
+        PRIVATE
+        ${PROJECT_NAME}
+        Boost::program_options
+        TensorRT::nvinfer
+        CUDA::cudart
+    )
+    install(TARGETS jist_mixvpr_recall_example DESTINATION bin)
+
     add_executable(mono_depth_example mono_depth_example.cpp)
     target_link_libraries(mono_depth_example
         PRIVATE
