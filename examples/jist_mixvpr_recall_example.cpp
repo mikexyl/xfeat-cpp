@@ -729,9 +729,15 @@ void writePrecisionRecallCurveCsv(const fs::path& output_path,
     }
   };
 
-  write_curve("JIST", "last-frame", jist_last_retrieval, jist_threshold_minimum, jist_threshold_maximum);
-  write_curve("JIST", "frame-argmax", jist_frame_argmax_retrieval, jist_threshold_minimum, jist_threshold_maximum);
-  write_curve("MixVPR", "last-frame", mixvpr_last_retrieval, mixvpr_threshold_minimum, mixvpr_threshold_maximum);
+  if (n_seq != 0) {
+    write_curve("JIST", "last-frame", jist_last_retrieval, jist_threshold_minimum, jist_threshold_maximum);
+    write_curve("JIST", "frame-argmax", jist_frame_argmax_retrieval, jist_threshold_minimum, jist_threshold_maximum);
+  }
+  write_curve("MixVPR",
+              n_seq == 0 ? "every-frame" : "last-frame",
+              mixvpr_last_retrieval,
+              mixvpr_threshold_minimum,
+              mixvpr_threshold_maximum);
 }
 
 std::string percent(double value) {
@@ -994,8 +1000,11 @@ int main(int argc, char** argv) {
     if (dataset_names.empty()) {
       throw std::invalid_argument("--datasets must contain at least one dataset name");
     }
-    if (n_skip == 0 || n_seq == 0) {
-      throw std::invalid_argument("--n-skip and --n-seq must both be positive");
+    if (n_skip == 0) {
+      throw std::invalid_argument("--n-skip must be positive");
+    }
+    if (n_seq == 0 && pr_curve_csv.empty()) {
+      throw std::invalid_argument("--n-seq=0 is the framewise MixVPR PR reference and requires --pr-curve-csv");
     }
     if (pose_max_dt < 0.0 || positive_distance < 0.0 || positive_yaw_degrees < 0.0 || positive_yaw_degrees > 180.0 ||
         min_time_separation < 0.0 || gt_sample_period <= 0.0 || temporal_match_tolerance < 0.0) {
@@ -1089,8 +1098,9 @@ int main(int argc, char** argv) {
       const Dataset& dataset = datasets[dataset_index];
       const std::vector<fs::path> images = listImages(dataset.image_dir);
       source_image_count += images.size();
+      const size_t logical_group_size = n_seq == 0 ? 1 : n_seq;
       std::vector<Sequence> dataset_sequences =
-          makeSequences(images, dataset.poses, dataset_index, n_skip, n_seq, max_sequences, pose_max_dt);
+          makeSequences(images, dataset.poses, dataset_index, n_skip, logical_group_size, max_sequences, pose_max_dt);
       for (const Sequence& sequence : dataset_sequences) {
         for (const double pose_dt : sequence.frame_pose_dts) {
           maximum_pose_dt = std::max(maximum_pose_dt, std::abs(pose_dt));
@@ -1106,16 +1116,114 @@ int main(int argc, char** argv) {
       throw std::runtime_error("Fewer than two complete sequences are available for comparison");
     }
 
-    std::cout << "  Total:        " << source_image_count << " images -> " << sequences.size() << " groups\n"
-              << "  Sampling:     keep every " << n_skip << "-th image, then non-overlapping n_seq=" << n_seq << '\n'
-              << "  Max pose |dt|: " << std::fixed << std::setprecision(6) << maximum_pose_dt << " s\n\n";
-
-    if (!fs::is_regular_file(jist_engine_path)) {
-      throw std::runtime_error("JIST TensorRT engine is not readable: " + jist_engine_path.string());
+    std::cout << "  Total:        " << source_image_count << " images -> " << sequences.size()
+              << (n_seq == 0 ? " framewise samples\n" : " groups\n") << "  Sampling:     keep every " << n_skip
+              << "-th image";
+    if (n_seq == 0) {
+      std::cout << "; n_seq=0 uses every retained image independently\n";
+    } else {
+      std::cout << ", then non-overlapping n_seq=" << n_seq << '\n';
     }
+    std::cout << "  Max pose |dt|: " << std::fixed << std::setprecision(6) << maximum_pose_dt << " s\n\n";
+
     if (!fs::is_regular_file(mixvpr_engine_path)) {
       throw std::runtime_error("MixVPR TensorRT engine is not readable: " + mixvpr_engine_path.string());
     }
+    if (n_seq != 0 && !fs::is_regular_file(jist_engine_path)) {
+      throw std::runtime_error("JIST TensorRT engine is not readable: " + jist_engine_path.string());
+    }
+
+    if (n_seq == 0) {
+      xfeat::MixVPRTRT::Params mixvpr_params;
+      mixvpr_params.model_path = mixvpr_engine_path.string();
+      mixvpr_params.verbose = verbose;
+      xfeat::MixVPRTRT mixvpr(mixvpr_params);
+      if (mixvpr.get_descriptor_dim() != 512) {
+        throw std::runtime_error("MixVPR engine must have a 512-D output; loaded engine reports " +
+                                 std::to_string(mixvpr.get_descriptor_dim()));
+      }
+
+      cv::Mat mixvpr_descriptors(static_cast<int>(sequences.size()), mixvpr.get_descriptor_dim(), CV_32F);
+      double mixvpr_inference_ms = 0.0;
+      std::cout << "TensorRT framewise MixVPR inference (FP16 engine with FP32 I/O)\n"
+                << "  Extracting " << sequences.size() << " every-n_skip frame descriptors...\n";
+      for (size_t index = 0; index < sequences.size(); ++index) {
+        const fs::path& image_path = sequences[index].images.back();
+        cv::Mat image = cv::imread(image_path.string(), cv::IMREAD_COLOR);
+        if (image.empty()) {
+          throw std::runtime_error("Failed to read image: " + image_path.string());
+        }
+        const auto start = std::chrono::steady_clock::now();
+        cv::Mat descriptor = mixvpr.infer(image);
+        mixvpr_inference_ms +=
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+        descriptor.copyTo(mixvpr_descriptors.row(static_cast<int>(index)));
+        if ((index + 1) % 250 == 0 || index + 1 == sequences.size()) {
+          std::cout << "    " << (index + 1) << " / " << sequences.size() << '\n';
+        }
+      }
+
+      const RetrievalResult mixvpr_framewise = retrieveMethod(mixvpr_descriptors,
+                                                              sequences,
+                                                              pr_mixvpr_threshold_minimum,
+                                                              positive_distance,
+                                                              positive_yaw_difference,
+                                                              min_time_separation);
+      RetrievalResult mixvpr_output;
+      std::string verification_stage = "off";
+      std::cout << "\nFramewise MixVPR precision-recall reference\n"
+                << "  Thresholds:       " << pr_mixvpr_threshold_maximum << " -> " << pr_mixvpr_threshold_minimum
+                << '\n'
+                << "  Points:           " << pr_threshold_count << '\n'
+                << "  Base detections:  " << mixvpr_framewise.detections.size() << '\n';
+
+      if (pr_verification_enabled) {
+        if (!fs::is_regular_file(xfeat_engine_path)) {
+          throw std::runtime_error("XFeat TensorRT engine is not readable: " + xfeat_engine_path.string());
+        }
+        if (!fs::is_regular_file(lighterglue_engine_path)) {
+          throw std::runtime_error("LighterGlue TensorRT engine is not readable: " + lighterglue_engine_path.string());
+        }
+        xfeat::XFeatTRT::Params xfeat_params;
+        xfeat_params.engine_path = xfeat_engine_path.string();
+        xfeat_params.nkpts = verification_params.xfeat_top_k;
+        xfeat_params.verbose = verbose;
+        xfeat::XFeatTRT xfeat_extractor(xfeat_params);
+        xfeat::LighterGlueTRT lighterglue(lighterglue_engine_path.string(), verbose);
+        GeometricVerifier verifier(xfeat_extractor, lighterglue, verification_params);
+        mixvpr_output = verifier.filter(mixvpr_framewise);
+        const VerificationStats& stats = verifier.stats();
+        const double verification_ms = stats.feature_extraction_ms + stats.lighterglue_ms + stats.ransac_ms;
+        verification_stage = "verified";
+        std::cout << "  Verified detections: " << mixvpr_output.detections.size() << '\n'
+                  << "  Verification work: requested=" << stats.requested_pairs << ", unique=" << stats.unique_pairs
+                  << ", pair-cache-hits=" << stats.pair_cache_hits << ", XFeat-images=" << stats.feature_extractions
+                  << ", timed-ms=" << verification_ms << '\n';
+      } else {
+        mixvpr_output = mixvpr_framewise;
+        std::cout << "  Verification: OFF (XFeat/LightGlue engines were not loaded)\n";
+      }
+
+      const RetrievalResult empty_retrieval;
+      writePrecisionRecallCurveCsv(pr_curve_csv,
+                                   n_seq,
+                                   ground_truth_loops,
+                                   gt_sample_period,
+                                   temporal_match_tolerance,
+                                   empty_retrieval,
+                                   empty_retrieval,
+                                   mixvpr_output,
+                                   pr_jist_threshold_minimum,
+                                   pr_jist_threshold_maximum,
+                                   pr_mixvpr_threshold_minimum,
+                                   pr_mixvpr_threshold_maximum,
+                                   pr_threshold_count,
+                                   verification_stage);
+      std::cout << "  Inference:        " << mixvpr_inference_ms << " ms\n"
+                << "  Wrote PR CSV:     " << pr_curve_csv << '\n';
+      return 0;
+    }
+
     xfeat::JistTRT::Params jist_params;
     jist_params.model_path = jist_engine_path.string();
     jist_params.verbose = verbose;

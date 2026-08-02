@@ -92,11 +92,16 @@ def parse_args() -> argparse.Namespace:
         help="Defaults to output/jist_mixvpr_pr[_verified] according to --verification",
     )
     parser.add_argument("--plot-only", action="store_true")
+    parser.add_argument(
+        "--append",
+        action="store_true",
+        help="Replace requested n_seq rows in an existing consolidated CSV and retain the others",
+    )
     parser.add_argument("--show", action="store_true")
     args = parser.parse_args()
 
-    if args.n_skip <= 0 or any(value < 5 for value in args.n_seq):
-        parser.error("--n-skip must be positive and every --n-seq must be >= 5")
+    if args.n_skip <= 0 or any(value != 0 and value < 5 for value in args.n_seq):
+        parser.error("--n-skip must be positive; --n-seq values must be 0 or >= 5")
     if len(set(args.n_seq)) != len(args.n_seq) or args.jobs <= 0:
         parser.error("--n-seq must be unique and --jobs must be positive")
     if args.threshold_count < 2:
@@ -231,12 +236,15 @@ def validate(rows: list[dict[str, str]], args: argparse.Namespace) -> None:
     for n_seq in args.n_seq:
         subset = [row for row in rows if int(row["n_seq"]) == n_seq]
         variants = {(row["method"], row["evaluation_mode"]) for row in subset}
+        expected_for_group = (
+            {("MixVPR", "every-frame")} if n_seq == 0 else expected_variants
+        )
         expected_stage = "verified" if args.verification else "off"
-        if variants != expected_variants or any(
+        if variants != expected_for_group or any(
             row["verification_stage"] != expected_stage for row in subset
         ):
             raise RuntimeError(f"Unexpected PR variants for n_seq={n_seq}")
-        for variant in expected_variants:
+        for variant in expected_for_group:
             curve = [
                 row
                 for row in subset
@@ -288,12 +296,19 @@ def plot(rows: list[dict[str, str]], args: argparse.Namespace, output_dir: Path)
         ("JIST", "frame-argmax", "JIST refined (argmax)", "#7c3aed", "D"),
         ("MixVPR", "last-frame", "MixVPR", "#dc2626", "s"),
     )
+    group_sizes = sorted({int(row["n_seq"]) for row in rows if int(row["n_seq"]) > 0})
+    panel_sizes = group_sizes or [0]
+    reference_curve = sorted(
+        (row for row in rows if int(row["n_seq"]) == 0),
+        key=lambda row: float(row["threshold"]),
+        reverse=True,
+    )
     columns = 2
-    panel_count = len(args.n_seq)
+    panel_count = len(panel_sizes)
     panel_rows = math.ceil(panel_count / columns)
     fig, axes = plt.subplots(panel_rows, columns, figsize=(12.5, 5.2 * panel_rows), squeeze=False)
-    for axis, n_seq in zip(axes.flat, sorted(args.n_seq), strict=False):
-        for method, mode, label, color, marker in variants:
+    for axis, n_seq in zip(axes.flat, panel_sizes, strict=False):
+        for method, mode, label, color, marker in variants if n_seq > 0 else ():
             curve = sorted(
                 (
                     row
@@ -320,7 +335,23 @@ def plot(rows: list[dict[str, str]], args: argparse.Namespace, output_dir: Path)
                 linewidth=2,
                 label=label,
             )
-        axis.set_title(f"$n_{{seq}}={n_seq}$")
+        if reference_curve:
+            reference_points = [
+                (100.0 * float(row["recall"]), 100.0 * float(row["precision"]))
+                for row in reference_curve
+                if math.isfinite(float(row["precision"]))
+            ]
+            axis.plot(
+                [point[0] for point in reference_points],
+                [point[1] for point in reference_points],
+                color="#111827",
+                linestyle="--",
+                linewidth=2.2,
+                label="MixVPR every sampled frame (reference)",
+            )
+        axis.set_title(
+            f"$n_{{seq}}={n_seq}$" if n_seq > 0 else "Framewise MixVPR reference ($n_{seq}=0$)"
+        )
         axis.set_xlabel("Temporal-loop recall (%)")
         axis.set_ylabel("Detection precision (%)")
         axis.set_xlim(0, 105)
@@ -397,6 +428,13 @@ def main() -> int:
                 rows.extend(future.result())
         print(f"Verified identical GT extraction: {consolidate_gt(args, output_dir)}")
         validate(rows, args)
+        if args.append and consolidated_path.is_file():
+            with consolidated_path.open(newline="", encoding="utf-8") as source:
+                existing_rows = list(csv.DictReader(source))
+            replaced_n_seq = set(args.n_seq)
+            rows = [
+                row for row in existing_rows if int(row["n_seq"]) not in replaced_n_seq
+            ] + rows
         write_consolidated(rows, consolidated_path)
     validate(rows, args)
     png_path, pdf_path = plot(rows, args, output_dir)

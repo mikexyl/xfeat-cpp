@@ -2,6 +2,9 @@
 
 C++ wrapper for JIST (Joint Image Sequence Transformer) ONNX models in the xfeat-cpp project.
 
+For the TensorRT sequence-retrieval benchmark and its one-frame-per-sequence
+argmax refinement, see [JIST Frame Refinement and VPR Evaluation](JIST_FRAME_REFINEMENT.md).
+
 ## Overview
 
 JIST is a sequence-based visual place recognition model that processes multiple consecutive images to produce a single descriptor for loop closure detection and place recognition tasks. This wrapper provides an efficient C++ interface for JIST ONNX models with support for both single and batch inference, streaming processing, and database management.
@@ -342,4 +345,3 @@ Same as xfeat-cpp project.
 
 - [JIST Python Implementation](../JIST/)
 - [XFeat Feature Matching](xfeat_onnx.h)
-
