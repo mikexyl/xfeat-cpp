@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Export the official ResNet-50 MixVPR 4096-D checkpoint to ONNX."""
+"""Export an official ResNet-50 MixVPR checkpoint to ONNX."""
 
 from __future__ import annotations
 
@@ -11,14 +11,23 @@ from pathlib import Path
 OFFICIAL_REPOSITORY = "https://github.com/amaralibey/MixVPR"
 
 
+def positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("value must be positive")
+    return parsed
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--checkpoint", type=Path, required=True)
     parser.add_argument(
         "--output",
         type=Path,
-        default=Path("onnx_model/mixvpr_resnet50_4096d.onnx"),
+        help="output path (defaults to onnx_model/mixvpr_resnet50_<dimension>d.onnx)",
     )
+    parser.add_argument("--out-channels", type=positive_int, default=1024)
+    parser.add_argument("--out-rows", type=positive_int, default=4)
     parser.add_argument("--opset", type=int, default=17)
     parser.add_argument("--device", choices=("cpu", "cuda"), default="cpu")
     return parser.parse_args()
@@ -32,7 +41,7 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def make_model(torch_module, torchvision_module):
+def make_model(torch_module, torchvision_module, out_channels: int, out_rows: int):
     nn = torch_module.nn
     functional = torch_module.nn.functional
 
@@ -71,8 +80,8 @@ def make_model(torch_module, torchvision_module):
             super().__init__()
             spatial_dimension = 20 * 20
             self.mix = nn.Sequential(*(FeatureMixerLayer(spatial_dimension) for _ in range(4)))
-            self.channel_proj = nn.Linear(1024, 1024)
-            self.row_proj = nn.Linear(spatial_dimension, 4)
+            self.channel_proj = nn.Linear(1024, out_channels)
+            self.row_proj = nn.Linear(spatial_dimension, out_rows)
 
         def forward(self, features):
             features = features.flatten(2)
@@ -95,7 +104,7 @@ def make_model(torch_module, torchvision_module):
     return MixVPRModel()
 
 
-def inspect_onnx(onnx_module, path: Path) -> None:
+def inspect_onnx(onnx_module, path: Path, descriptor_dimension: int) -> None:
     model = onnx_module.load(str(path))
     onnx_module.checker.check_model(model)
     graph = model.graph
@@ -109,7 +118,7 @@ def inspect_onnx(onnx_module, path: Path) -> None:
     output_shape = dimensions(graph.output[0])
     if graph.input[0].name != "image" or input_shape != [1, 3, 320, 320]:
         raise RuntimeError(f"unexpected ONNX input: {graph.input[0].name} {input_shape}")
-    if graph.output[0].name != "descriptor" or output_shape != [1, 4096]:
+    if graph.output[0].name != "descriptor" or output_shape != [1, descriptor_dimension]:
         raise RuntimeError(f"unexpected ONNX output: {graph.output[0].name} {output_shape}")
     print(f"ONNX input:  {graph.input[0].name} {input_shape}")
     print(f"ONNX output: {graph.output[0].name} {output_shape}")
@@ -117,6 +126,9 @@ def inspect_onnx(onnx_module, path: Path) -> None:
 
 def main() -> None:
     args = parse_args()
+    descriptor_dimension = args.out_channels * args.out_rows
+    if args.output is None:
+        args.output = Path(f"onnx_model/mixvpr_resnet50_{descriptor_dimension}d.onnx")
     if not args.checkpoint.is_file():
         raise FileNotFoundError(f"checkpoint not found: {args.checkpoint}")
 
@@ -127,7 +139,7 @@ def main() -> None:
     if args.device == "cuda" and not torch.cuda.is_available():
         raise RuntimeError("--device cuda requested, but CUDA is unavailable")
     device = torch.device(args.device)
-    model = make_model(torch, torchvision)
+    model = make_model(torch, torchvision, args.out_channels, args.out_rows)
     state_dict = torch.load(args.checkpoint, map_location="cpu", weights_only=True)
     model.load_state_dict(state_dict, strict=True)
     model.eval().to(device)
@@ -135,7 +147,7 @@ def main() -> None:
     dummy = torch.zeros((1, 3, 320, 320), dtype=torch.float32, device=device)
     with torch.inference_mode():
         reference = model(dummy)
-    if tuple(reference.shape) != (1, 4096):
+    if tuple(reference.shape) != (1, descriptor_dimension):
         raise RuntimeError(f"unexpected PyTorch output shape: {tuple(reference.shape)}")
     print(f"PyTorch descriptor L2 norm: {reference.norm().item():.8f}")
 
@@ -154,7 +166,7 @@ def main() -> None:
 
     onnx_model = onnx.load(str(args.output))
     metadata = {
-        "model": "MixVPR ResNet-50 4096-D",
+        "model": f"MixVPR ResNet-50 {descriptor_dimension}-D",
         "source": OFFICIAL_REPOSITORY,
         "checkpoint_sha256": sha256(args.checkpoint),
         "preprocessing": "RGB float32; ImageNet mean/std; 320x320",
@@ -165,7 +177,7 @@ def main() -> None:
         entry.key = key
         entry.value = value
     onnx.save(onnx_model, str(args.output))
-    inspect_onnx(onnx, args.output)
+    inspect_onnx(onnx, args.output, descriptor_dimension)
     print(f"Saved {args.output} ({args.output.stat().st_size / (1024 * 1024):.2f} MiB)")
     print(f"SHA-256: {sha256(args.output)}")
 
