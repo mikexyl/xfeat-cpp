@@ -116,6 +116,63 @@ TEST(TensorRTFeatures, JistSmokeRunsWhenEngineIsProvided) {
 #endif
 }
 
+TEST(TensorRTFeatures, JistDualOutputPreservesSequenceAndNormalizesFrames) {
+#ifndef HAVE_TENSORRT
+  GTEST_SKIP() << "TensorRT support is not available";
+#else
+  const char* engine = requiredEnvironment("JIST_DUAL_OUTPUT_TRT_ENGINE");
+  if (engine == nullptr) {
+    GTEST_SKIP() << "JIST_DUAL_OUTPUT_TRT_ENGINE is not set";
+  }
+  const cv::Mat image =
+      cv::imread(sourcePath("image/sample1.jpg"), cv::IMREAD_COLOR);
+  ASSERT_FALSE(image.empty());
+
+  xfeat::JistTRT::Params params;
+  params.model_path = engine;
+  xfeat::JistTRT model(params);
+  ASSERT_TRUE(model.has_frame_descriptors());
+  ASSERT_EQ(model.get_seq_length(), 5);
+  ASSERT_EQ(model.get_descriptor_dim(), 512);
+  const std::vector<cv::Mat> images(model.get_seq_length(), image);
+  const auto result = model.infer_with_frame_descriptors(images);
+  const cv::Mat legacy_sequence = model.infer(images);
+
+  ASSERT_EQ(result.sequence_descriptor.size(), cv::Size(512, 1));
+  ASSERT_EQ(result.sequence_descriptor.type(), CV_32F);
+  ASSERT_EQ(result.frame_descriptors.size(), cv::Size(512, 5));
+  ASSERT_EQ(result.frame_descriptors.type(), CV_32F);
+  EXPECT_GT(result.sequence_descriptor.dot(legacy_sequence), 0.99999f);
+  for (int row = 0; row < result.frame_descriptors.rows; ++row) {
+    EXPECT_NEAR(cv::norm(result.frame_descriptors.row(row), cv::NORM_L2),
+                1.0,
+                1e-4);
+  }
+#endif
+}
+
+TEST(TensorRTFeatures, JistOneOutputStrictlyRejectsFrameInference) {
+#ifndef HAVE_TENSORRT
+  GTEST_SKIP() << "TensorRT support is not available";
+#else
+  const char* engine = requiredEnvironment("JIST_TRT_ENGINE");
+  if (engine == nullptr) GTEST_SKIP() << "JIST_TRT_ENGINE is not set";
+  const cv::Mat image =
+      cv::imread(sourcePath("image/sample1.jpg"), cv::IMREAD_COLOR);
+  ASSERT_FALSE(image.empty());
+
+  xfeat::JistTRT::Params params;
+  params.model_path = engine;
+  xfeat::JistTRT model(params);
+  if (model.has_frame_descriptors()) {
+    GTEST_SKIP() << "JIST_TRT_ENGINE already exposes frame descriptors";
+  }
+  EXPECT_THROW(model.infer_with_frame_descriptors(
+                   std::vector<cv::Mat>(model.get_seq_length(), image)),
+               std::runtime_error);
+#endif
+}
+
 TEST(TensorRTFeatures, MixVPRSmokeRunsWhenEngineIsProvided) {
 #ifndef HAVE_TENSORRT
   GTEST_SKIP() << "TensorRT support is not available";

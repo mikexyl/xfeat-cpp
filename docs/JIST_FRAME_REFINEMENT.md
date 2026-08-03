@@ -147,3 +147,19 @@ python3 python/plot_jist_mixvpr_pr.py --verification --n-seq 0 --jobs 1 --append
 
 The framewise verified run may be very expensive because every detection above
 the minimum MixVPR threshold is sent to geometric verification.
+
+## Dual-output artifacts
+
+The official endpoint/refined ablation uses one FP32 dual-output model; endpoint
+mode ignores the frame-descriptor output. The generated artifacts are kept out
+of Git and identified by SHA-256:
+
+| Artifact | SHA-256 |
+| --- | --- |
+| Source `JIST_r18_512_seqgem_simplified.onnx` | `7a97d2ce8bd05b2a817c313ef60cc1bc184cec66d33ed1286de3ba0f65e73d4e` |
+| Generated `JIST_r18_512_seqgem_frames.onnx` | `f8e3ddd7df7a33e9d203b1ab2d3c795020b401c46a49ad88a3a97edac6d38218` |
+| RTX 5080 `JIST_r18_512_seqgem_frames_fp32.engine` | `e8d197bde685eeac0a111df1d48b9770dc74f386c450cac88f978cdaaa115bae` |
+
+The engine was built independently on the RTX 5080 (compute capability 12.0)
+with TensorRT 10.13.2.6 and CUDA 13.0. It is machine-specific and must not be
+copied between hosts.
