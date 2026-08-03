@@ -60,7 +60,7 @@ if(TENSORRT_LIBRARY)
         src/stereo_depth/stereo_depth.cpp
         src/stereo_depth/stereo_depth_libsgm.cpp
         src/stereo_depth/stereo_depth_lightstereo.cpp
-        src/stereo_depth/stereo_depth_fast_foundation_stereo.cu  # GWC volume kernel between two TRT engines
+        src/stereo_depth/stereo_depth_fast_foundation_stereo.cpp
         src/stereo_depth/stereo_depth_onnx.cpp
     )
     set(MONO_DEPTH_SOURCES
@@ -91,6 +91,26 @@ endif()
 message(STATUS "xfeat-cpp CUDA architectures: ${CMAKE_CUDA_ARCHITECTURES}")
 
 enable_language(CUDA)
+
+if(TENSORRT_AVAILABLE)
+    # Official Fast-FoundationStereo single-engine GWC plugin. The runtime
+    # wrapper registers this plugin before deserializing the engine, and the
+    # conversion helper loads the same shared object while building it.
+    add_library(xfeat_ffs_gwc_plugin SHARED
+        thirdparty/Fast-FoundationStereo/cpp/src/gwc_volume_plugin.cpp
+        thirdparty/Fast-FoundationStereo/cpp/src/depth_kernels.cu
+    )
+    set_target_properties(xfeat_ffs_gwc_plugin PROPERTIES
+        POSITION_INDEPENDENT_CODE ON
+        CUDA_SEPARABLE_COMPILATION ON
+        CUDA_RESOLVE_DEVICE_SYMBOLS ON
+    )
+    target_include_directories(xfeat_ffs_gwc_plugin PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/Fast-FoundationStereo/cpp/include>
+        $<INSTALL_INTERFACE:include/xfeat-cpp/thirdparty/fast_foundation_stereo>
+    )
+    target_link_libraries(xfeat_ffs_gwc_plugin PRIVATE TensorRT::nvinfer CUDA::cudart)
+endif()
 
 # ------------- Main library target
 add_library(${PROJECT_NAME} STATIC
@@ -132,7 +152,7 @@ target_link_libraries(${PROJECT_NAME}
 
 # Link TensorRT privately if available (not part of public interface)
 if(TENSORRT_AVAILABLE)
-    target_link_libraries(${PROJECT_NAME} PRIVATE TensorRT::nvinfer)
+    target_link_libraries(${PROJECT_NAME} PRIVATE TensorRT::nvinfer xfeat_ffs_gwc_plugin)
     target_compile_definitions(${PROJECT_NAME} PUBLIC HAVE_TENSORRT)
 endif()
 
@@ -206,7 +226,12 @@ endif()
 
 include(CMakePackageConfigHelpers)
 
-install(TARGETS ${PROJECT_NAME} sgm
+set(XFEAT_INSTALL_TARGETS ${PROJECT_NAME} sgm)
+if(TARGET xfeat_ffs_gwc_plugin)
+    list(APPEND XFEAT_INSTALL_TARGETS xfeat_ffs_gwc_plugin)
+endif()
+
+install(TARGETS ${XFEAT_INSTALL_TARGETS}
     EXPORT xfeat-cppTargets
     ARCHIVE DESTINATION lib
     LIBRARY DESTINATION lib
@@ -221,6 +246,10 @@ install(EXPORT xfeat-cppTargets
 
 install(DIRECTORY include/ DESTINATION include)
 install(DIRECTORY thirdparty/libsgm/include/ DESTINATION include)
+if(TARGET xfeat_ffs_gwc_plugin)
+    install(FILES thirdparty/Fast-FoundationStereo/cpp/include/ffs_gwc_plugin.hpp
+        DESTINATION include/xfeat-cpp/thirdparty/fast_foundation_stereo)
+endif()
 
 configure_package_config_file(
     "${CMAKE_CURRENT_SOURCE_DIR}/cmake/xfeat-cppConfig.cmake.in"

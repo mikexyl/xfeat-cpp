@@ -58,13 +58,13 @@ cuda-cudart-dev = "*"
 
 [feature.export.tasks]
 convert-ffs = { cmd = """python python/convert_fast_foundation_stereo_to_tensorrt.py \
-  --model_dir thirdparty/Fast-FoundationStereo/weights/weights/23-36-37/model_best_bp2_serialize.pth \
+  --model_dir thirdparty/Fast-FoundationStereo/weights/23-36-37/model_best_bp2_serialize.pth \
   --save_path onnx_model/fast_foundation_stereo/ \
   --height 448 --width 640 --valid_iters 8 --max_disp 192""" }
 convert-ffs-skip-onnx = { cmd = """python python/convert_fast_foundation_stereo_to_tensorrt.py \
-  --model_dir thirdparty/Fast-FoundationStereo/weights/weights/23-36-37/model_best_bp2_serialize.pth \
+  --model_dir thirdparty/Fast-FoundationStereo/weights/23-36-37/model_best_bp2_serialize.pth \
   --save_path onnx_model/fast_foundation_stereo/ \
-  --height 448 --width 640 --valid_iters 8 --max_disp 192 --skip_onnx""" }
+  --height 448 --width 640 --valid_iters 8 --max_disp 192 --skip-onnx""" }
 convert-da3 = { cmd = """python python/convert_depth_anything_v3_to_tensorrt.py \
   --onnx onnx_model/mono_depth/depth_anything_v3/depth_anything_v3.onnx \
   --output onnx_model/mono_depth/depth_anything_v3/depth_anything_v3.engine \

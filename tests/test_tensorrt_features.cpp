@@ -12,6 +12,7 @@
 #include "xfeat-cpp/lighterglue_trt.h"
 #include "xfeat-cpp/place_recognition/jist_trt.h"
 #include "xfeat-cpp/place_recognition/mixvpr_trt.h"
+#include "xfeat-cpp/stereo_depth/stereo_depth_fast_foundation_stereo.h"
 #include "xfeat-cpp/xfeat_trt.h"
 #endif
 
@@ -161,5 +162,30 @@ TEST(TensorRTFeatures, MixVPRTensorRTAgreesWithONNXRuntime) {
   const cv::Mat actual = trt_model.infer(image);
   ASSERT_EQ(actual.size(), expected.size());
   EXPECT_GT(actual.dot(expected), 0.999f);
+#endif
+}
+
+TEST(TensorRTFeatures, FastFoundationStereoSmokeRunsWhenEngineIsProvided) {
+#ifndef HAVE_TENSORRT
+  GTEST_SKIP() << "TensorRT support is not available";
+#else
+  const char* engine = requiredEnvironment("FFS_TRT_ENGINE");
+  if (engine == nullptr) GTEST_SKIP() << "FFS_TRT_ENGINE is not set";
+  const cv::Mat left = cv::imread(sourcePath("image/sample1.jpg"), cv::IMREAD_COLOR);
+  const cv::Mat right = cv::imread(sourcePath("image/sample2.jpg"), cv::IMREAD_COLOR);
+  ASSERT_FALSE(left.empty());
+  ASSERT_FALSE(right.empty());
+
+  xfeat::FastFoundationStereoDepth::Params params;
+  params.engine_path = engine;
+  xfeat::FastFoundationStereoDepth model(params);
+  EXPECT_GT(model.inputSize().width, 0);
+  EXPECT_GT(model.inputSize().height, 0);
+
+  cv::Mat disparity;
+  model.compute(left, right, disparity);
+  EXPECT_EQ(disparity.size(), left.size());
+  EXPECT_EQ(disparity.type(), CV_32F);
+  EXPECT_TRUE(cv::checkRange(disparity));
 #endif
 }

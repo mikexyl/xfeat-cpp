@@ -4,11 +4,13 @@ This directory contains a comprehensive stereo depth estimation framework with m
 
 ## Overview
 
-The framework provides a base `StereoDepth` class with three concrete implementations:
+The framework provides a base `StereoDepth` class with five concrete implementations:
 
 1. **OpenCVStereoDepth** - OpenCV's built-in algorithms (BM and SGBM)
 2. **LibSGMStereoDepth** - GPU-accelerated Semi-Global Matching
-3. **LightStereoDepth** - Deep learning-based depth estimation using TensorRT
+3. **OnnxStereoDepth** - Generic learned stereo models using ONNX Runtime
+4. **LightStereoDepth** - Deep learning-based depth estimation using TensorRT
+5. **FastFoundationStereoDepth** - Fast-FoundationStereo using its official single TensorRT engine and GWC plugin
 
 ## Class Hierarchy
 
@@ -16,7 +18,9 @@ The framework provides a base `StereoDepth` class with three concrete implementa
 StereoDepth (abstract base class)
 ├── OpenCVStereoDepth
 ├── LibSGMStereoDepth
-└── LightStereoDepth
+├── OnnxStereoDepth
+├── LightStereoDepth
+└── FastFoundationStereoDepth
 ```
 
 ## Base Class API
@@ -145,7 +149,21 @@ stereo->compute(left, right, disparity);
 - CUDA-capable GPU
 - LibSGM compiled with `BUILD_OPENCV_WRAPPER=ON`
 
-### 3. LightStereoDepth
+### 3. OnnxStereoDepth
+
+Generic two-input learned stereo models using ONNX Runtime:
+
+```cpp
+#include "xfeat-cpp/stereo_depth/stereo_depth_onnx.h"
+
+xfeat::OnnxStereoDepth::Params params;
+params.model_path = "stereo.onnx";
+params.input_size = cv::Size(640, 480);
+params.use_cuda = true;
+xfeat::OnnxStereoDepth stereo(params);
+```
+
+### 4. LightStereoDepth
 
 Deep learning-based stereo depth estimation using TensorRT.
 
@@ -196,6 +214,45 @@ cv::Mat color_disp = stereo->getColorDisparity();
 - CUDA-capable GPU
 - TensorRT installed
 - Pre-trained LightStereo model converted to TensorRT engine
+
+### 5. FastFoundationStereoDepth
+
+Fast-FoundationStereo inference using the official single-engine
+`FFSGWCVolume` TensorRT plugin. The public wrapper uses xfeat-cpp's shared
+TensorRT engine implementation; the plugin is registered before the engine is
+deserialized.
+
+```cpp
+#include "xfeat-cpp/stereo_depth/stereo_depth_fast_foundation_stereo.h"
+
+xfeat::FastFoundationStereoDepth::Params params;
+params.engine_path = "fast_foundationstereo.engine";
+params.max_disparity = 192;  // Must match the export setting.
+
+xfeat::FastFoundationStereoDepth stereo(params);
+stereo.warmup(left.size());
+
+cv::Mat disparity;
+stereo.compute(left, right, disparity);
+```
+
+The engine dimensions are read from TensorRT rather than duplicated in
+`Params`. Inputs may be grayscale or BGR. Images are resized with preserved
+aspect ratio, padded to the engine size, converted to RGB CHW float data in the
+0-255 range, and restored to the source resolution after inference.
+
+Build the official plugin ONNX graph and single engine with:
+
+```bash
+cmake --build build --target xfeat_ffs_gwc_plugin
+python python/convert_fast_foundation_stereo_to_tensorrt.py \
+  --model_dir thirdparty/Fast-FoundationStereo/weights/23-36-37/model_best_bp2_serialize.pth \
+  --save_path onnx_model/fast_foundation_stereo \
+  --height 448 --width 640 --valid_iters 8 --max_disp 192
+```
+
+The installed `xfeat_ffs_gwc_plugin` library must remain available to the
+dynamic linker when loading an engine containing `FFSGWCVolume`.
 
 ## Depth Computation
 

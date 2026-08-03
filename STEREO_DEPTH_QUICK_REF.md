@@ -25,7 +25,9 @@ stereo->computeDepth(left, right, depth, 721.5f, 0.54f);
 | Simple, no GPU | OpenCV BM | `OpenCVStereoDepth(Algorithm::BM)` |
 | Best quality, CPU | OpenCV SGBM | `OpenCVStereoDepth(Algorithm::SGBM)` |
 | Real-time, GPU | LibSGM | `LibSGMStereoDepth()` |
+| Generic learned model | ONNX Runtime | `OnnxStereoDepth(params)` |
 | State-of-art | LightStereo | `LightStereoDepth(engine_path)` |
+| Fast zero-shot, GPU | Fast-FoundationStereo | `FastFoundationStereoDepth(params)` |
 
 ## Key Parameters
 
@@ -52,6 +54,12 @@ params.engine_path = "model.trt";
 params.target_size = cv::Size(1248, 384);
 ```
 
+### Fast-FoundationStereo
+```cpp
+params.engine_path = "fast_foundationstereo.engine";
+params.max_disparity = 192;  // Must match the export setting.
+```
+
 ## Common Operations
 
 ```cpp
@@ -73,7 +81,9 @@ stereo->warmup(cv::Size(1280, 720));
 |---------------|------|----------|-------|
 | OpenCV | Any | 1 or 3 | Auto converts to gray |
 | LibSGM | CV_8U/16U/32S | 1 or 3 | Auto converts to gray |
+| ONNX Runtime | CV_8U | 1 or 3 | Model-specific normalization |
 | LightStereo | CV_8U | 3 (RGB) | Requires color |
+| Fast-FoundationStereo | CV_8U | 1 or 3 | Official single-engine GWC plugin |
 
 ## Output Formats
 
@@ -81,14 +91,17 @@ stereo->warmup(cv::Size(1280, 720));
 |---------------|---------------|-------|---------------|
 | OpenCV | CV_16S | 16 | < 0 |
 | LibSGM | CV_16S | 16 | Special value |
+| ONNX Runtime | CV_32F | 1 | Model-dependent |
 | LightStereo | CV_32F | 1 | 0 |
+| Fast-FoundationStereo | CV_32F | 1 | 0 |
 
 ## Performance Tips
 
 1. **For OpenCV**: Use SGBM for better quality, BM for speed
 2. **For LibSGM**: Always warmup GPU first, use 4-path for speed
 3. **For LightStereo**: Warmup with 10+ iterations, batch processing
-4. **General**: Smaller num_disparities = faster, larger = more range
+4. **For Fast-FoundationStereo**: Reduce export-time iterations or image size for speed
+5. **General**: Smaller num_disparities = faster, larger = more range
 
 ## Troubleshooting
 
@@ -99,6 +112,7 @@ stereo->warmup(cv::Size(1280, 720));
 | Out of memory | Reduce image size or num_disparities |
 | LibSGM not found | Build with `BUILD_OPENCV_WRAPPER=ON` |
 | TensorRT error | Check engine file path and CUDA version |
+| `FFSGWCVolume` missing | Ensure `xfeat_ffs_gwc_plugin` is installed and discoverable |
 
 ## Example: Complete Pipeline
 
@@ -144,7 +158,9 @@ int main() {
 // Construction
 OpenCVStereoDepth stereo(params);
 LibSGMStereoDepth stereo(params);
+OnnxStereoDepth stereo(params);
 LightStereoDepth stereo(params);
+FastFoundationStereoDepth stereo(params);
 
 // Core methods
 stereo.compute(left, right, disparity);

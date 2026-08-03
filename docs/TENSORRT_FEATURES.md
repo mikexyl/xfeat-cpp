@@ -1,4 +1,4 @@
-# TensorRT XFeat, LighterGlue, JIST, and MixVPR
+# TensorRT XFeat, LighterGlue, JIST, MixVPR, and Fast-FoundationStereo
 
 The native TensorRT backends load serialized engines directly and do not use
 ONNX Runtime during inference:
@@ -12,6 +12,11 @@ ONNX Runtime during inference:
   five-frame JIST engine.
 - `xfeat::MixVPRTRT` implements the `PlaceRecognizer` interface for the
   single-image, 4096-dimensional MixVPR engine.
+- `xfeat::FastFoundationStereoDepth` runs the official single
+  Fast-FoundationStereo engine after registering its `FFSGWCVolume` plugin.
+
+All five backends execute serialized engines through the shared
+`xfeat::trt_detail::Engine` implementation.
 
 Export the official ResNet-50 MixVPR checkpoint before building its engine:
 
@@ -95,5 +100,6 @@ LIGHTERGLUE_TRT_ENGINE=/path/to/lighterglue.engine \
 JIST_TRT_ENGINE=/path/to/jist.engine \
 MIXVPR_TRT_ENGINE=/path/to/mixvpr.engine \
 MIXVPR_ONNX_MODEL=/path/to/mixvpr.onnx \
+FFS_TRT_ENGINE=/path/to/fast_foundationstereo.engine \
 ./build/tests/test_tensorrt_features
 ```

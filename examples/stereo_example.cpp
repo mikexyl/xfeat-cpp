@@ -11,9 +11,8 @@
  *   --onnx PATH             OnnxStereoDepth model (.onnx)
  *   --acvnet PATH           FastACVNet+ model (.onnx, 288x512 input)
  *   --lightstereo PATH      LightStereoDepth engine (.engine)
- *   --ffs-feat PATH         FastFoundationStereo feature_runner engine
- *   --ffs-post PATH         FastFoundationStereo post_runner engine
- *   --ffs-maxdisp N         max disparity for FFS (default 192)
+ *   --ffs-engine PATH       FastFoundationStereo single TensorRT engine
+ *   --ffs-maxdisp N         export-time max disparity (default 192)
  *   --focal F               focal length in pixels (default 721.5)
  *   --baseline B            stereo baseline in metres (default 0.54)
  */
@@ -292,15 +291,12 @@ static void runLightStereo(const cv::Mat& left, const cv::Mat& right,
 }
 
 static void runFFS(const cv::Mat& left, const cv::Mat& right,
-                   const std::string& feat_engine,
-                   const std::string& post_engine, int max_disp,
+                   const std::string& engine_path, int max_disp,
                    float focal, float baseline,
                    std::vector<StereoResult>& out) {
   xfeat::FastFoundationStereoDepth::Params p;
-  p.feature_engine_path = feat_engine;
-  p.post_engine_path = post_engine;
-  p.target_size = cv::Size(640, 448);
-  p.max_disp = max_disp;
+  p.engine_path = engine_path;
+  p.max_disparity = max_disp;
   p.warmup_iterations = 3;
   xfeat::FastFoundationStereoDepth stereo(p);
   stereo.warmup(left.size());
@@ -324,7 +320,7 @@ static void runFFS(const cv::Mat& left, const cv::Mat& right,
 
 int main(int argc, char** argv) {
   std::string left_path, right_path;
-  std::string onnx_model, acvnet_model, lightstereo_engine, ffs_feat, ffs_post;
+  std::string onnx_model, acvnet_model, lightstereo_engine, ffs_engine;
   float focal = 721.5f, baseline = 0.54f;
   int ffs_maxdisp = 192;
 
@@ -337,9 +333,8 @@ int main(int argc, char** argv) {
     ("onnx",    po::value(&onnx_model),             "OnnxStereoDepth model (.onnx)")
     ("acvnet",  po::value(&acvnet_model),           "FastACVNet+ model (.onnx, 288x512 input)")
     ("lightstereo", po::value(&lightstereo_engine), "LightStereoDepth engine (.engine)")
-    ("ffs-feat",    po::value(&ffs_feat),           "FastFoundationStereo feature engine")
-    ("ffs-post",    po::value(&ffs_post),           "FastFoundationStereo post engine")
-    ("ffs-maxdisp", po::value(&ffs_maxdisp),        "FFS max disparity (default 192)")
+    ("ffs-engine",  po::value(&ffs_engine),         "FastFoundationStereo single engine")
+    ("ffs-maxdisp", po::value(&ffs_maxdisp),        "FFS export-time max disparity (default 192)")
     ("focal",       po::value(&focal),              "Focal length px (default 721.5)")
     ("baseline",    po::value(&baseline),           "Baseline m (default 0.54)");
   // clang-format on
@@ -419,11 +414,10 @@ int main(int argc, char** argv) {
     }
   }
 
-  if (!ffs_feat.empty() && !ffs_post.empty()) {
+  if (!ffs_engine.empty()) {
     std::puts("\n--- FastFoundationStereo ---");
     try {
-      runFFS(left, right, ffs_feat, ffs_post, ffs_maxdisp, focal, baseline,
-             results);
+      runFFS(left, right, ffs_engine, ffs_maxdisp, focal, baseline, results);
     } catch (const std::exception& e) {
       std::fprintf(stderr, "  SKIP: %s\n", e.what());
     }
