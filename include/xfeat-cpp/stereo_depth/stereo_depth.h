@@ -7,10 +7,10 @@ namespace xfeat {
 
 /**
  * @brief Base class for stereo depth estimation algorithms
- * 
+ *
  * This abstract class provides a common interface for various stereo depth
- * estimation methods including OpenCV's default algorithms, LibSGM, and
- * deep learning-based methods like LightStereo.
+ * estimation methods including OpenCV's native algorithms and deep
+ * learning-based methods like LightStereo.
  */
 class StereoDepth {
  public:
@@ -18,11 +18,11 @@ class StereoDepth {
 
   /**
    * @brief Compute disparity map from stereo image pair
-   * 
+   *
    * @param left Left rectified image (grayscale or color depending on implementation)
    * @param right Right rectified image (grayscale or color depending on implementation)
    * @param disparity Output disparity map (CV_16S or CV_32F depending on implementation)
-   * 
+   *
    * @note The disparity values may be scaled by a factor (e.g., 16 for subpixel precision)
    *       Check getDisparityScale() to get the scaling factor
    */
@@ -30,7 +30,7 @@ class StereoDepth {
 
   /**
    * @brief Compute depth map from stereo image pair
-   * 
+   *
    * @param left Left rectified image
    * @param right Right rectified image
    * @param depth Output depth map in meters (CV_32F)
@@ -42,7 +42,7 @@ class StereoDepth {
 
   /**
    * @brief Convert disparity map to depth map
-   * 
+   *
    * @param disparity Input disparity map
    * @param depth Output depth map in meters (CV_32F)
    * @param focal_length Focal length in pixels
@@ -53,35 +53,35 @@ class StereoDepth {
 
   /**
    * @brief Get the disparity scaling factor
-   * 
+   *
    * @return Scaling factor (e.g., 16 for subpixel precision, 1 for no scaling)
    */
   virtual int getDisparityScale() const = 0;
 
   /**
    * @brief Get minimum disparity value
-   * 
+   *
    * @return Minimum disparity
    */
   virtual int getMinDisparity() const = 0;
 
   /**
    * @brief Get number of disparity levels
-   * 
+   *
    * @return Number of disparities
    */
   virtual int getNumDisparities() const = 0;
 
   /**
    * @brief Get block/window size used for matching
-   * 
+   *
    * @return Block size (odd number, typically 3-21)
    */
   virtual int getBlockSize() const = 0;
 
   /**
    * @brief Warm up the algorithm (useful for GPU-based methods)
-   * 
+   *
    * Performs initialization and memory allocation to ensure optimal
    * performance for subsequent compute calls.
    */
@@ -89,7 +89,7 @@ class StereoDepth {
 
   /**
    * @brief Check if the algorithm requires grayscale input
-   * 
+   *
    * @return true if grayscale input is required, false otherwise
    */
   virtual bool requiresGrayscale() const { return true; }
@@ -110,7 +110,7 @@ class OpenCVStereoDepth : public StereoDepth {
     int min_disparity;
     int num_disparities;  // Must be divisible by 16
     int block_size;          // Odd number, typically 3-21
-    
+
     // SGBM-specific parameters
     int P1;                  // Penalty for small disparity changes (P1 = 8*channels*block_size^2)
     int P2;                 // Penalty for large disparity changes (P2 = 32*channels*block_size^2)
@@ -120,7 +120,10 @@ class OpenCVStereoDepth : public StereoDepth {
     int speckle_window_size;
     int speckle_range;
     int mode;  // SGBM mode
-    
+    // Optional CPU working resolution. Disparity is returned at the input
+    // resolution and expressed in input-image pixels.
+    cv::Size target_size;
+
     // Constructor with defaults
     Params() 
       : algorithm(Algorithm::SGBM),
@@ -134,7 +137,8 @@ class OpenCVStereoDepth : public StereoDepth {
         uniqueness_ratio(10),
         speckle_window_size(100),
         speckle_range(32),
-        mode(cv::StereoSGBM::MODE_SGBM_3WAY) {}
+        mode(cv::StereoSGBM::MODE_SGBM_3WAY),
+        target_size() {}
   };
 
   explicit OpenCVStereoDepth(const Params& params = Params());

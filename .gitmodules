@@ -1,12 +1,9 @@
 [submodule "thirdparty/gms"]
 	path = thirdparty/gms
 	url = git@github.com:JiawangBian/GMS-Feature-Matcher.git
-[submodule "thirdparty/libsgm"]
-	path = thirdparty/libsgm
-	url = https://github.com/fixstars/libSGM.git
 [submodule "thirdparty/lightstereo"]
 	path = thirdparty/lightstereo
-	url = git@github.com:XiandaGuo/OpenStereo.git
+	url = git@github.com:mikexyl/OpenStereo.git
 [submodule "thirdparty/Fast-FoundationStereo"]
 	path = thirdparty/Fast-FoundationStereo
 	url = https://github.com/NVlabs/Fast-FoundationStereo

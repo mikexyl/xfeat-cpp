@@ -18,7 +18,6 @@
  */
 
 #include "xfeat-cpp/stereo_depth/stereo_depth.h"
-#include "xfeat-cpp/stereo_depth/stereo_depth_libsgm.h"
 #include "xfeat-cpp/stereo_depth/stereo_depth_onnx.h"
 #ifdef HAVE_TENSORRT
 #include "xfeat-cpp/stereo_depth/stereo_depth_lightstereo.h"
@@ -211,33 +210,6 @@ static void runOpenCVSGBM(const cv::Mat& left, const cv::Mat& right,
   appendResult(out, disp, depth, "OpenCV SGBM  " + std::to_string(static_cast<int>(ms)) + " ms");
 }
 
-static void runLibSGM(const cv::Mat& left, const cv::Mat& right,
-                      float focal, float baseline,
-                      std::vector<StereoResult>& out,
-                      bool use_gpu = true) {
-  xfeat::LibSGMStereoDepth::Params p;
-  p.num_disparities = 128;
-  p.P1 = 10;
-  p.P2 = 120;
-  p.use_gpu = use_gpu;
-  xfeat::LibSGMStereoDepth stereo(p);
-  stereo.warmup(left.size());
-
-  cv::Mat disp;
-  auto t0 = std::chrono::steady_clock::now();
-  stereo.compute(left, right, disp);
-  double ms = std::chrono::duration<double, std::milli>(
-                  std::chrono::steady_clock::now() - t0)
-                  .count();
-
-  cv::Mat depth;
-  stereo.disparityToDepth(disp, depth, focal, baseline);
-  const char* lbl = use_gpu ? "LibSGM GPU" : "LibSGM CPU";
-  std::printf("  %s: %.1f ms\n", lbl, ms);
-  appendResult(out, disp, depth,
-               std::string(lbl) + "  " + std::to_string(static_cast<int>(ms)) + " ms");
-}
-
 static void runOnnx(const cv::Mat& left, const cv::Mat& right,
                     const std::string& model_path, const std::string& label,
                     cv::Size input_size, float focal, float baseline,
@@ -373,13 +345,6 @@ int main(int argc, char** argv) {
   std::puts("\n--- OpenCV SGBM ---");
   try {
     runOpenCVSGBM(left, right, focal, baseline, results);
-  } catch (const std::exception& e) {
-    std::fprintf(stderr, "  SKIP: %s\n", e.what());
-  }
-
-  std::puts("\n--- LibSGM GPU ---");
-  try {
-    runLibSGM(left, right, focal, baseline, results, true);
   } catch (const std::exception& e) {
     std::fprintf(stderr, "  SKIP: %s\n", e.what());
   }

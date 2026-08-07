@@ -37,7 +37,7 @@ cmake --install build --prefix /path/to/install
 ```
 
 ### Submodules
-Three submodules under `thirdparty/`: `libsgm`, `gms`, `lightstereo`. Run `git submodule update --init --recursive` before first build. CMakeLists.txt automatically patches `thirdparty/libsgm/CMakeLists.txt` for export compatibility.
+The project uses tracked submodules under `thirdparty/`, including `gms`, `lightstereo`, and Fast-FoundationStereo. Run `git submodule update --init --recursive` before first build.
 
 ### CUDA MPS (multi-process GPU)
 If running multiple GPU processes simultaneously:
@@ -86,7 +86,6 @@ Concrete implementations:
 
 **Stereo Depth** (all inherit from abstract `StereoDepth`)
 - `OpenCVStereoDepth` — CPU BM/SGBM algorithms.
-- `LibSGMStereoDepth` — GPU-accelerated SGM via libSGM (CUDA).
 - `OnnxStereoDepth` — ONNX Runtime inference (FastACVNet and similar networks).
 - `LightStereoDepth` — TensorRT-based deep stereo; only compiled when TensorRT is found (`HAVE_TENSORRT` defined).
 

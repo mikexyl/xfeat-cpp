@@ -7,20 +7,20 @@ This directory contains a comprehensive stereo depth estimation framework with m
 The framework provides a base `StereoDepth` class with five concrete implementations:
 
 1. **OpenCVStereoDepth** - OpenCV's built-in algorithms (BM and SGBM)
-2. **LibSGMStereoDepth** - GPU-accelerated Semi-Global Matching
-3. **OnnxStereoDepth** - Generic learned stereo models using ONNX Runtime
-4. **LightStereoDepth** - Deep learning-based depth estimation using TensorRT
-5. **FastFoundationStereoDepth** - Fast-FoundationStereo using its official single TensorRT engine and GWC plugin
+2. **OnnxStereoDepth** - Generic learned stereo models using ONNX Runtime
+3. **LightStereoDepth** - Deep learning-based depth estimation using TensorRT
+4. **FastFoundationStereoDepth** - Fast-FoundationStereo using its official single TensorRT engine and GWC plugin
+5. **VPIStereoDepth** - NVIDIA VPI semi-global matching on CUDA
 
 ## Class Hierarchy
 
 ```
 StereoDepth (abstract base class)
 ├── OpenCVStereoDepth
-├── LibSGMStereoDepth
 ├── OnnxStereoDepth
 ├── LightStereoDepth
-└── FastFoundationStereoDepth
+├── FastFoundationStereoDepth
+└── VPIStereoDepth
 ```
 
 ## Base Class API
@@ -63,6 +63,7 @@ Uses OpenCV's built-in stereo matching algorithms.
 - Block Matching (BM) - Fast, suitable for simple scenes
 - Semi-Global Block Matching (SGBM) - More accurate, better for complex scenes
 - CPU-based processing
+- Optional lower working resolution with disparity restored to the input size and pixel scale
 - No external dependencies beyond OpenCV
 
 **Example:**
@@ -73,6 +74,7 @@ OpenCVStereoDepth::Params params;
 params.algorithm = OpenCVStereoDepth::Algorithm::SGBM;
 params.num_disparities = 128;  // Must be divisible by 16
 params.block_size = 5;          // Odd number, typically 3-21
+params.target_size = cv::Size(512, 288);  // Optional CPU working resolution
 params.P1 = 8 * 1 * params.block_size * params.block_size;
 params.P2 = 32 * 1 * params.block_size * params.block_size;
 
@@ -86,6 +88,7 @@ stereo->compute(left, right, disparity);
 - `algorithm`: BM or SGBM
 - `num_disparities`: Maximum disparity range (must be divisible by 16)
 - `block_size`: Window size for matching (odd number)
+- `target_size`: Optional working resolution; output is restored to the input size and horizontal disparity scale
 - `P1`, `P2`: Smoothness penalties for SGBM
 - `uniqueness_ratio`: Margin for uniqueness check
 - `speckle_window_size`, `speckle_range`: Noise filtering
@@ -95,61 +98,27 @@ stereo->compute(left, right, disparity);
 - Disparity scale: 16 (subpixel precision)
 - Invalid disparities: negative values
 
-### 2. LibSGMStereoDepth
+### NVIDIA VPI CUDA Stereo
 
-GPU-accelerated Semi-Global Matching using the LibSGM library.
+`VPIStereoDepth` runs NVIDIA VPI's CUDA semi-global matcher. VPI is detected
+automatically from a standard VPI 4 installation; builds without VPI remain
+supported.
 
-**Features:**
-- CUDA GPU acceleration
-- 4-path or 8-path optimization
-- Subpixel precision
-- Census transform
-- Left-Right consistency check
-- Significantly faster than CPU implementations
-
-**Example:**
 ```cpp
-#include "xfeat-cpp/stereo_depth/stereo_depth_libsgm.h"
+#include "xfeat-cpp/stereo_depth/stereo_depth_vpi.h"
 
-LibSGMStereoDepth::Params params;
-params.num_disparities = 128;
-params.P1 = 10;
-params.P2 = 120;
-params.uniqueness_ratio = 0.95f;
-params.subpixel = true;
-params.path_type = sgm::PathType::SCAN_8PATH;
-params.use_gpu = true;
-
-auto stereo = std::make_unique<LibSGMStereoDepth>(params);
-
-// Warmup GPU for optimal performance
-stereo->warmup(image_size);
-
-cv::Mat disparity;
-stereo->compute(left, right, disparity);
+xfeat::VPIStereoDepth::Params params;
+params.min_disparity = 10;
+params.max_disparity = 128;
+params.target_size = cv::Size(512, 288);
+xfeat::VPIStereoDepth stereo(params);
 ```
 
-**Parameters:**
-- `num_disparities`: Maximum disparity range
-- `P1`: Penalty for small disparity changes (±1)
-- `P2`: Penalty for large disparity changes (>1)
-- `uniqueness_ratio`: Uniqueness check threshold
-- `subpixel`: Enable subpixel precision (4 fractional bits)
-- `path_type`: SCAN_4PATH or SCAN_8PATH
-- `lr_max_diff`: Max difference for LR consistency (-1 to disable)
-- `census_type`: Census transform type
-- `use_gpu`: Enable GPU acceleration
+The output is native `CV_16S` Q10.5 disparity (`getDisparityScale() == 32`).
+When `target_size` is used, the result is restored to the input resolution and
+remains expressed in input-image pixels.
 
-**Output:**
-- Disparity type: `CV_16S`
-- Disparity scale: 16 (if subpixel enabled), 1 otherwise
-- Invalid disparities: special value from `getInvalidDisparity()`
-
-**Requirements:**
-- CUDA-capable GPU
-- LibSGM compiled with `BUILD_OPENCV_WRAPPER=ON`
-
-### 3. OnnxStereoDepth
+### 2. OnnxStereoDepth
 
 Generic two-input learned stereo models using ONNX Runtime:
 
@@ -163,7 +132,7 @@ params.use_cuda = true;
 xfeat::OnnxStereoDepth stereo(params);
 ```
 
-### 4. LightStereoDepth
+### 3. LightStereoDepth
 
 Deep learning-based stereo depth estimation using TensorRT.
 
@@ -303,7 +272,6 @@ Typical performance on KITTI stereo images (1242×375):
 |--------|----------|------|---------|
 | OpenCV BM | CPU | ~50 ms | Good |
 | OpenCV SGBM | CPU | ~200 ms | Very Good |
-| LibSGM | GPU (RTX 3090) | ~5 ms | Very Good |
 | LightStereo | GPU (RTX 3090) | ~10 ms | Excellent |
 
 ## Parameter Tuning
@@ -319,9 +287,9 @@ Typical performance on KITTI stereo images (1242×375):
 - Lower `P1`, `P2` for more detail
 
 ### For Real-time Applications:
-- Use LibSGM with GPU
-- Use 4-path instead of 8-path
-- Disable subpixel precision if not needed
+- Use OpenCV BM for the fastest native CPU path
+- Reduce `num_disparities` when the expected depth range permits it
+- Set OpenCV `target_size` below the camera resolution to reduce CPU cost
 
 ## Error Handling
 
@@ -341,12 +309,10 @@ try {
 
 1. Hirschmuller, H. (2008). Stereo Processing by Semiglobal Matching and Mutual Information
 2. OpenCV Stereo Matching: https://docs.opencv.org/4.x/dd/d53/tutorial_py_depthmap.html
-3. LibSGM: https://github.com/fixstars/libSGM
-4. LightStereo: [Paper/Repository Link]
+3. LightStereo: [Paper/Repository Link]
 
 ## License
 
 See individual library licenses:
 - OpenCV: Apache 2.0
-- LibSGM: Apache 2.0
 - LightStereo: [License]

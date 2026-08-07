@@ -24,7 +24,7 @@ stereo->computeDepth(left, right, depth, 721.5f, 0.54f);
 |----------|---------------|------|
 | Simple, no GPU | OpenCV BM | `OpenCVStereoDepth(Algorithm::BM)` |
 | Best quality, CPU | OpenCV SGBM | `OpenCVStereoDepth(Algorithm::SGBM)` |
-| Real-time, GPU | LibSGM | `LibSGMStereoDepth()` |
+| Semi-global matching, GPU | NVIDIA VPI CUDA | `VPIStereoDepth(params)` |
 | Generic learned model | ONNX Runtime | `OnnxStereoDepth(params)` |
 | State-of-art | LightStereo | `LightStereoDepth(engine_path)` |
 | Fast zero-shot, GPU | Fast-FoundationStereo | `FastFoundationStereoDepth(params)` |
@@ -37,21 +37,21 @@ params.num_disparities = 128;  // Max disparity (÷16)
 params.block_size = 5;         // Window size (odd)
 params.P1 = 200;               // Small penalty
 params.P2 = 800;               // Large penalty
-```
-
-### LibSGM  
-```cpp
-params.num_disparities = 128;
-params.P1 = 10;
-params.P2 = 120;
-params.subpixel = true;
-params.use_gpu = true;
+params.target_size = cv::Size(512, 288);  // Optional CPU working resolution
 ```
 
 ### LightStereo
 ```cpp
 params.engine_path = "model.trt";
 params.target_size = cv::Size(1248, 384);
+```
+
+### NVIDIA VPI CUDA
+```cpp
+params.min_disparity = 10;
+params.max_disparity = 128;
+params.confidence_threshold = 55535;
+params.target_size = cv::Size(512, 288);
 ```
 
 ### Fast-FoundationStereo
@@ -80,7 +80,7 @@ stereo->warmup(cv::Size(1280, 720));
 | Implementation | Type | Channels | Notes |
 |---------------|------|----------|-------|
 | OpenCV | Any | 1 or 3 | Auto converts to gray |
-| LibSGM | CV_8U/16U/32S | 1 or 3 | Auto converts to gray |
+| NVIDIA VPI CUDA | CV_8U | 1, 3, or 4 | Converts to gray; optional lower working resolution |
 | ONNX Runtime | CV_8U | 1 or 3 | Model-specific normalization |
 | LightStereo | CV_8U | 3 (RGB) | Requires color |
 | Fast-FoundationStereo | CV_8U | 1 or 3 | Official single-engine GWC plugin |
@@ -90,15 +90,15 @@ stereo->warmup(cv::Size(1280, 720));
 | Implementation | Disparity Type | Scale | Invalid Value |
 |---------------|---------------|-------|---------------|
 | OpenCV | CV_16S | 16 | < 0 |
-| LibSGM | CV_16S | 16 | Special value |
+| NVIDIA VPI CUDA | CV_16S | 32 (Q10.5) | `(min_disparity - 1) * 32` |
 | ONNX Runtime | CV_32F | 1 | Model-dependent |
 | LightStereo | CV_32F | 1 | 0 |
 | Fast-FoundationStereo | CV_32F | 1 | 0 |
 
 ## Performance Tips
 
-1. **For OpenCV**: Use SGBM for better quality, BM for speed
-2. **For LibSGM**: Always warmup GPU first, use 4-path for speed
+1. **For OpenCV**: Use SGBM for better quality, BM for speed; set `target_size` to compute at lower resolution while returning full-resolution disparity
+2. **For NVIDIA VPI**: Reuse one matcher instance and call `warmup()` before the first frame
 3. **For LightStereo**: Warmup with 10+ iterations, batch processing
 4. **For Fast-FoundationStereo**: Reduce export-time iterations or image size for speed
 5. **General**: Smaller num_disparities = faster, larger = more range
@@ -110,7 +110,6 @@ stereo->warmup(cv::Size(1280, 720));
 | Slow performance | Use GPU implementation or reduce parameters |
 | Poor quality | Increase P1/P2, use SGBM, or try LightStereo |
 | Out of memory | Reduce image size or num_disparities |
-| LibSGM not found | Build with `BUILD_OPENCV_WRAPPER=ON` |
 | TensorRT error | Check engine file path and CUDA version |
 | `FFSGWCVolume` missing | Ensure `xfeat_ffs_gwc_plugin` is installed and discoverable |
 
@@ -157,7 +156,6 @@ int main() {
 ```cpp
 // Construction
 OpenCVStereoDepth stereo(params);
-LibSGMStereoDepth stereo(params);
 OnnxStereoDepth stereo(params);
 LightStereoDepth stereo(params);
 FastFoundationStereoDepth stereo(params);

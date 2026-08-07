@@ -2,23 +2,21 @@
 
 ## Overview
 
-This project provides a stereo depth framework with a base class and five implementations.
+This project provides a stereo depth framework with a base class and four implementations.
 
 ### Files Created
 
 **Header Files:**
 1. `/workspaces/src/xfeat-cpp/include/xfeat-cpp/stereo_depth/stereo_depth.h` - Base class and OpenCV implementation
-2. `/workspaces/src/xfeat-cpp/include/xfeat-cpp/stereo_depth/stereo_depth_libsgm.h` - LibSGM implementation
-3. `/workspaces/src/xfeat-cpp/include/xfeat-cpp/stereo_depth/stereo_depth_lightstereo.h` - LightStereo deep learning implementation
-4. `/workspaces/src/xfeat-cpp/include/xfeat-cpp/stereo_depth/stereo_depth_onnx.h` - Generic ONNX Runtime implementation
-5. `/workspaces/src/xfeat-cpp/include/xfeat-cpp/stereo_depth/stereo_depth_fast_foundation_stereo.h` - Fast-FoundationStereo single-engine implementation
+2. `/workspaces/src/xfeat-cpp/include/xfeat-cpp/stereo_depth/stereo_depth_lightstereo.h` - LightStereo deep learning implementation
+3. `/workspaces/src/xfeat-cpp/include/xfeat-cpp/stereo_depth/stereo_depth_onnx.h` - Generic ONNX Runtime implementation
+4. `/workspaces/src/xfeat-cpp/include/xfeat-cpp/stereo_depth/stereo_depth_fast_foundation_stereo.h` - Fast-FoundationStereo single-engine implementation
 
 **Implementation Files:**
 1. `/workspaces/src/xfeat-cpp/src/stereo_depth/stereo_depth.cpp` - Base class and OpenCV implementation
-2. `/workspaces/src/xfeat-cpp/src/stereo_depth/stereo_depth_libsgm.cpp` - LibSGM implementation  
-3. `/workspaces/src/xfeat-cpp/src/stereo_depth/stereo_depth_lightstereo.cpp` - LightStereo implementation
-4. `/workspaces/src/xfeat-cpp/src/stereo_depth/stereo_depth_onnx.cpp` - Generic ONNX Runtime implementation
-5. `/workspaces/src/xfeat-cpp/src/stereo_depth/stereo_depth_fast_foundation_stereo.cpp` - Fast-FoundationStereo shared TensorRT engine wrapper
+2. `/workspaces/src/xfeat-cpp/src/stereo_depth/stereo_depth_lightstereo.cpp` - LightStereo implementation
+3. `/workspaces/src/xfeat-cpp/src/stereo_depth/stereo_depth_onnx.cpp` - Generic ONNX Runtime implementation
+4. `/workspaces/src/xfeat-cpp/src/stereo_depth/stereo_depth_fast_foundation_stereo.cpp` - Fast-FoundationStereo shared TensorRT engine wrapper
 
 **Example and Documentation:**
 1. `/workspaces/src/xfeat-cpp/examples/stereo_depth_example.cpp` - Complete usage example
@@ -29,7 +27,6 @@ This project provides a stereo depth framework with a base class and five implem
 ```
 StereoDepth (abstract base class)
 ├── OpenCVStereoDepth (CPU-based Block Matching and SGBM)
-├── LibSGMStereoDepth (GPU-accelerated Semi-Global Matching)
 ├── LightStereoDepth (Deep learning with TensorRT)
 ├── OnnxStereoDepth (Learned stereo with ONNX Runtime)
 └── FastFoundationStereoDepth (Official single TensorRT engine and GWC plugin)
@@ -50,14 +47,6 @@ StereoDepth (abstract base class)
 - Fully configurable parameters (P1, P2, uniqueness ratio, etc.)
 - 16x subpixel precision
 
-### LibSGMStereoDepth
-- GPU-accelerated using CUDA
-- 4-path or 8-path optimization
-- Census transform with configurable types
-- Left-Right consistency check
-- Significantly faster than CPU implementations
-- Optional subpixel precision
-
 ### LightStereoDepth
 - State-of-the-art deep learning model
 - TensorRT inference for real-time performance
@@ -69,17 +58,15 @@ StereoDepth (abstract base class)
 
 1. **Abstract Base Class**: Provides a common interface for all implementations, making it easy to swap algorithms
 
-2. **Forward Declarations**: LibSGM uses forward declarations to avoid exposing implementation details in headers
+2. **PIMPL Pattern**: LightStereo uses PIMPL (Pointer to Implementation) to hide TensorRT dependencies
 
-3. **PIMPL Pattern**: LightStereo uses PIMPL (Pointer to Implementation) to hide TensorRT dependencies
+3. **Params Structs**: Each implementation has a Params struct for configuration with sensible defaults
 
-4. **Params Structs**: Each implementation has a Params struct for configuration with sensible defaults
+4. **Error Handling**: All methods throw std::runtime_error or std::invalid_argument for errors
 
-5. **Error Handling**: All methods throw std::runtime_error or std::invalid_argument for errors
+5. **OpenCV Integration**: All classes use cv::Mat for input/output compatibility
 
-6. **OpenCV Integration**: All classes use cv::Mat for input/output compatibility
-
-7. **GPU Optimization**: Both LibSGM and LightStereo support GPU acceleration with warmup methods
+6. **GPU Optimization**: Learned backends support GPU acceleration with warmup methods
 
 ## Usage Example
 
@@ -88,12 +75,6 @@ StereoDepth (abstract base class)
 OpenCVStereoDepth::Params opencv_params;
 opencv_params.num_disparities = 128;
 auto opencv_stereo = std::make_unique<OpenCVStereoDepth>(opencv_params);
-
-// LibSGM (GPU)
-LibSGMStereoDepth::Params libsgm_params;
-libsgm_params.use_gpu = true;
-auto libsgm_stereo = std::make_unique<LibSGMStereoDepth>(libsgm_params);
-libsgm_stereo->warmup(image_size);
 
 // LightStereo (Deep Learning)
 LightStereoDepth::Params lightstereo_params;
@@ -117,7 +98,6 @@ Based on typical stereo images (1242×375):
 |--------|----------|------|---------|
 | OpenCV BM | CPU | ~50 ms | Good |
 | OpenCV SGBM | CPU | ~200 ms | Very Good |
-| LibSGM | GPU | ~5 ms | Very Good |
 | LightStereo | GPU | ~10 ms | Excellent |
 
 ## Build Requirements
@@ -125,11 +105,6 @@ Based on typical stereo images (1242×375):
 ### Base + OpenCV Implementation:
 - OpenCV 4.x with calib3d module
 - C++14 or later
-
-### LibSGM Implementation:
-- CUDA Toolkit
-- LibSGM compiled with BUILD_OPENCV_WRAPPER=ON
-- OpenCV with CUDA support
 
 ### LightStereo Implementation:
 - CUDA Toolkit
@@ -145,7 +120,6 @@ To use these classes in your project:
 # Add stereo depth library
 add_library(stereo_depth
     src/stereo_depth/stereo_depth.cpp
-    src/stereo_depth/stereo_depth_libsgm.cpp
     src/stereo_depth/stereo_depth_lightstereo.cpp
 )
 
@@ -153,7 +127,6 @@ target_link_libraries(stereo_depth
     PUBLIC
         ${OpenCV_LIBS}
     PRIVATE
-        sgm_wrapper  # if using LibSGM
         nvinfer      # if using LightStereo
         cudart
 )

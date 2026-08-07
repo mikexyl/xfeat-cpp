@@ -21,6 +21,8 @@ void StereoDepth::disparityToDepth(const cv::Mat& disparity, cv::Mat& depth,
 
   const int scale = getDisparityScale();
   const float baseline_focal = baseline * focal_length;
+  const float minimum_disparity =
+      static_cast<float>(getMinDisparity());
 
   // Convert disparity to float if needed
   cv::Mat disp_float;
@@ -44,10 +46,10 @@ void StereoDepth::disparityToDepth(const cv::Mat& disparity, cv::Mat& depth,
   for (int y = 0; y < disp_float.rows; ++y) {
     const float* disp_ptr = disp_float.ptr<float>(y);
     float* depth_ptr = depth.ptr<float>(y);
-    
+
     for (int x = 0; x < disp_float.cols; ++x) {
       float d = disp_ptr[x];
-      if (d > 0.0f) {
+      if (d > 0.0f && d >= minimum_disparity) {
         depth_ptr[x] = baseline_focal / d;
       } else {
         depth_ptr[x] = 0.0f;  // Invalid depth
@@ -116,8 +118,52 @@ void OpenCVStereoDepth::compute(const cv::Mat& left, const cv::Mat& right,
     right_gray = right;
   }
 
-  // Compute disparity
-  matcher_->compute(left_gray, right_gray, disparity);
+  const cv::Size original_size = left_gray.size();
+  const bool needs_resize = !params_.target_size.empty() &&
+                            params_.target_size != original_size;
+  if (needs_resize) {
+    if (params_.target_size.width > original_size.width ||
+        params_.target_size.height > original_size.height) {
+      throw std::invalid_argument(
+          "target_size must not enlarge the stereo input");
+    }
+    cv::resize(left_gray, left_gray, params_.target_size, 0.0, 0.0,
+               cv::INTER_LINEAR);
+    cv::resize(right_gray, right_gray, params_.target_size, 0.0, 0.0,
+               cv::INTER_LINEAR);
+  }
+
+  cv::Mat working_disparity;
+  matcher_->compute(left_gray, right_gray, working_disparity);
+  if (working_disparity.type() != CV_16S) {
+    throw std::runtime_error("OpenCV stereo matcher returned non-CV_16S data");
+  }
+
+  if (!needs_resize) {
+    disparity = working_disparity;
+    return;
+  }
+
+  // OpenCV stores disparity with four fractional bits. Preserve validity at
+  // the working resolution before interpolation; otherwise the
+  // (minDisparity - 1) sentinel can become a plausible positive disparity.
+  const int invalid_working_disparity =
+      (params_.min_disparity - 1) * getDisparityScale();
+  const cv::Mat working_valid =
+      working_disparity > invalid_working_disparity;
+
+  cv::Mat resized_disparity;
+  cv::resize(working_disparity, resized_disparity, original_size, 0.0, 0.0,
+             cv::INTER_LINEAR);
+  const double horizontal_scale =
+      static_cast<double>(original_size.width) /
+      static_cast<double>(params_.target_size.width);
+  resized_disparity.convertTo(disparity, CV_16S, horizontal_scale);
+
+  cv::Mat valid;
+  cv::resize(working_valid, valid, original_size, 0.0, 0.0,
+             cv::INTER_NEAREST);
+  disparity.setTo(-getDisparityScale(), ~valid);
 }
 
 }  // namespace xfeat

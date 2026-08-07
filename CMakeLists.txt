@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.10)
+cmake_minimum_required(VERSION 3.22)
 project(xfeat-cpp)
 
 set(CMAKE_CXX_STANDARD 17)
@@ -20,6 +20,19 @@ find_package(onnxruntime REQUIRED)
 find_package(TBB REQUIRED)
 find_package(faiss REQUIRED)
 find_package(OpenMP REQUIRED)
+
+# NVIDIA VPI is optional. Its standard Debian installation exports the vpi
+# target below /opt/nvidia/vpi4.
+find_package(vpi 4.1 QUIET CONFIG HINTS /opt/nvidia/vpi4)
+if(vpi_FOUND)
+    message(STATUS "Found NVIDIA VPI ${vpi_VERSION} - enabling CUDA stereo")
+    set(VPI_AVAILABLE TRUE)
+    set(VPI_STEREO_SOURCES src/stereo_depth/stereo_depth_vpi.cpp)
+else()
+    message(STATUS "NVIDIA VPI not found - VPI CUDA stereo will not be available")
+    set(VPI_AVAILABLE FALSE)
+    set(VPI_STEREO_SOURCES)
+endif()
 
 # Try to find TensorRT (optional for TensorRT-backed depth modules)
 find_library(TENSORRT_LIBRARY nvinfer
@@ -58,7 +71,6 @@ if(TENSORRT_LIBRARY)
     endif()
     set(STEREO_DEPTH_SOURCES
         src/stereo_depth/stereo_depth.cpp
-        src/stereo_depth/stereo_depth_libsgm.cpp
         src/stereo_depth/stereo_depth_lightstereo.cpp
         src/stereo_depth/stereo_depth_fast_foundation_stereo.cpp
         src/stereo_depth/stereo_depth_onnx.cpp
@@ -78,7 +90,6 @@ else()
     set(TENSORRT_AVAILABLE FALSE)
     set(STEREO_DEPTH_SOURCES
         src/stereo_depth/stereo_depth.cpp
-        src/stereo_depth/stereo_depth_libsgm.cpp
         src/stereo_depth/stereo_depth_onnx.cpp
     )
     set(MONO_DEPTH_SOURCES)
@@ -124,6 +135,7 @@ add_library(${PROJECT_NAME} STATIC
     src/place_recognition/mixvpr_onnx.cpp
     src/segmentation/skyseg_trt.cpp
     ${STEREO_DEPTH_SOURCES}
+    ${VPI_STEREO_SOURCES}
     ${MONO_DEPTH_SOURCES}
     ${TENSORRT_FEATURE_SOURCES}
 )
@@ -137,13 +149,9 @@ set(XFEAT_LINK_LIBS
     TBB::tbb
     TBB::tbbmalloc
     faiss
-    sgm
     CUDA::cudart
     OpenMP::OpenMP_CXX
 )
-
-# Add BUILD_OPENCV_WRAPPER definition for stereo_depth_libsgm.cpp
-target_compile_definitions(${PROJECT_NAME} PRIVATE BUILD_OPENCV_WRAPPER)
 
 target_link_libraries(${PROJECT_NAME}
     PUBLIC
@@ -154,6 +162,11 @@ target_link_libraries(${PROJECT_NAME}
 if(TENSORRT_AVAILABLE)
     target_link_libraries(${PROJECT_NAME} PRIVATE TensorRT::nvinfer xfeat_ffs_gwc_plugin)
     target_compile_definitions(${PROJECT_NAME} PUBLIC HAVE_TENSORRT)
+endif()
+
+if(VPI_AVAILABLE)
+    target_link_libraries(${PROJECT_NAME} PUBLIC vpi)
+    target_compile_definitions(${PROJECT_NAME} PUBLIC HAVE_VPI)
 endif()
 
 add_subdirectory(include/xfeat-cpp/nms/anms)
@@ -188,45 +201,13 @@ add_subdirectory(thirdparty/lightstereo/deploy/cpp)
 # Keep dependency samples aligned with the workspace-level examples option.
 set(ENABLE_SAMPLES ${XFEAT_BUILD_EXAMPLES} CACHE BOOL "Build samples" FORCE)
 
-# Enable OpenCV wrapper for libsgm BEFORE adding the subdirectory
-set(BUILD_OPENCV_WRAPPER ON CACHE BOOL "Make library compatible with cv::Mat and cv::cuda::GpuMat of OpenCV" FORCE)
-
-# Patch libsgm CMakeLists.txt for proper export support
-set(LIBSGM_CMAKE_FILE "${CMAKE_SOURCE_DIR}/thirdparty/libsgm/src/CMakeLists.txt")
-file(READ "${LIBSGM_CMAKE_FILE}" LIBSGM_CMAKE_CONTENT)
-
-# Check if patch is needed
-string(FIND "${LIBSGM_CMAKE_CONTENT}" "INTERFACE_INCLUDE_DIRECTORIES \${LIBSGM_INCLUDE_DIR}" NEEDS_PATCH)
-if(NOT NEEDS_PATCH EQUAL -1)
-    message(STATUS "Patching libsgm for proper export support")
-    
-    # Replace the problematic include directories setup
-    string(REPLACE 
-        "target_include_directories(\${PROJECT_NAME} PRIVATE \${LIBSGM_INCLUDE_DIR} $<$<BOOL:\${BUILD_OPENCV_WRAPPER}>:\${OpenCV_INCLUDE_DIRS}>)"
-        "target_include_directories(\${PROJECT_NAME}\n    PUBLIC\n        $<BUILD_INTERFACE:\${LIBSGM_INCLUDE_DIR}>\n        $<INSTALL_INTERFACE:include>\n    PRIVATE\n        $<$<BOOL:\${BUILD_OPENCV_WRAPPER}>:\${OpenCV_INCLUDE_DIRS}>)"
-        LIBSGM_CMAKE_CONTENT "${LIBSGM_CMAKE_CONTENT}")
-    
-    # Remove the problematic set_target_properties line
-    string(REPLACE 
-        "set_target_properties(\${PROJECT_NAME} PROPERTIES INTERFACE_INCLUDE_DIRECTORIES \${LIBSGM_INCLUDE_DIR})\n\n"
-        ""
-        LIBSGM_CMAKE_CONTENT "${LIBSGM_CMAKE_CONTENT}")
-    
-    file(WRITE "${LIBSGM_CMAKE_FILE}" "${LIBSGM_CMAKE_CONTENT}")
-endif()
-
-add_subdirectory(thirdparty/libsgm)
-
-# Set POSITION_INDEPENDENT_CODE for libsgm after it's added
-set_target_properties(sgm PROPERTIES POSITION_INDEPENDENT_CODE ON)
-
 if(XFEAT_BUILD_EXAMPLES)
     add_subdirectory(examples)
 endif()
 
 include(CMakePackageConfigHelpers)
 
-set(XFEAT_INSTALL_TARGETS ${PROJECT_NAME} sgm)
+set(XFEAT_INSTALL_TARGETS ${PROJECT_NAME})
 if(TARGET xfeat_ffs_gwc_plugin)
     list(APPEND XFEAT_INSTALL_TARGETS xfeat_ffs_gwc_plugin)
 endif()
@@ -245,7 +226,6 @@ install(EXPORT xfeat-cppTargets
 )
 
 install(DIRECTORY include/ DESTINATION include)
-install(DIRECTORY thirdparty/libsgm/include/ DESTINATION include)
 if(TARGET xfeat_ffs_gwc_plugin)
     install(FILES thirdparty/Fast-FoundationStereo/cpp/include/ffs_gwc_plugin.hpp
         DESTINATION include/xfeat-cpp/thirdparty/fast_foundation_stereo)

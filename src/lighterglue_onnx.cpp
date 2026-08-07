@@ -63,7 +63,7 @@ void LighterGlueOnnx::run(const std::vector<float>& mkpts0,
                           const std::array<float, 2>& image1_size,
                           std::vector<std::array<int64_t, 2>>& matches,
                           std::vector<float>& scores) {
-  // Clear any pre-existing CUDA errors from other libraries (vilib, libsgm)
+  // Clear any pre-existing CUDA errors from other libraries (for example vilib)
   cudaError_t prev_err = cudaGetLastError();
   if (prev_err != cudaSuccess) {
     std::cerr << "WARNING: Pre-existing CUDA error before LighterGlue: " 

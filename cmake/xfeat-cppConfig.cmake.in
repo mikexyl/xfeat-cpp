@@ -13,6 +13,11 @@ find_package(OpenMP REQUIRED)
 
 find_package(faiss REQUIRED)
 
+set(VPI_AVAILABLE @VPI_AVAILABLE@)
+if(VPI_AVAILABLE)
+    find_package(vpi 4.1 REQUIRED CONFIG HINTS /opt/nvidia/vpi4)
+endif()
+
 # TensorRT remains optional for non-TensorRT builds. When xfeat-cpp was built
 # with TensorRT, its exported targets (including the FFS GWC plugin) require the
 # matching runtime and headers.
@@ -49,7 +54,7 @@ endif()
 include("${CMAKE_CURRENT_LIST_DIR}/xfeat-cppTargets.cmake")
 
 set(xfeat-cpp_INCLUDE_DIRS "${PACKAGE_PREFIX_DIR}/include" ${onnxruntime_INCLUDE_DIR})
-set(xfeat-cpp_LIBRARIES xfeat-cpp::xfeat-cpp xfeat-cpp::sgm)
+set(xfeat-cpp_LIBRARIES xfeat-cpp::xfeat-cpp)
 if(TENSORRT_AVAILABLE)
     list(APPEND xfeat-cpp_LIBRARIES xfeat-cpp::xfeat_ffs_gwc_plugin)
 endif()
